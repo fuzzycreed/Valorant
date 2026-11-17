@@ -14,7 +14,7 @@
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
     // 追跡する Riot ID（カンマ区切りで複数可）
-    "RIOT_IDS": "cinder#qshen",
+    "RIOT_IDS": "cinder#qshen,Thou Shalt Die#srymb",
     "REGION": "ap",
     "PLATFORM": "pc"
   },
