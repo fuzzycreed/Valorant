@@ -7,9 +7,13 @@ export interface Env {
   RIOT_IDS: string;
   REGION: string;
   PLATFORM: string;
+  /** Discord 連携（任意）。3つとも設定されているときだけ bot が有効になる。 */
+  DISCORD_PUBLIC_KEY?: string;
+  DISCORD_APP_ID?: string;
+  DISCORD_BOT_TOKEN?: string;
+  /** テスト用。既定は https://discord.com/api/v10 */
+  DISCORD_API_BASE?: string;
 }
-
-const SCHEMA_VERSION = "1";
 
 /** player_matches の列。順序は INSERT とスキーマの両方で使う。 */
 export const PM_NUM_COLS = [
@@ -22,7 +26,7 @@ export const PM_NUM_COLS = [
 ] as const;
 const PM_TEXT_COLS = ["name", "tag", "team", "party_id", "agent", "agent_id", "tier_name", "clutches", "weapons"] as const;
 
-const DDL = [
+const DDL_V1 = [
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`,
   `CREATE TABLE IF NOT EXISTS players (
      puuid TEXT PRIMARY KEY, name TEXT NOT NULL, tag TEXT NOT NULL, region TEXT NOT NULL, platform TEXT NOT NULL,
@@ -51,21 +55,41 @@ const DDL = [
      PRIMARY KEY (puuid, match_id))`,
 ];
 
+const DDL_V2 = [
+  // Discord ユーザーと Riot アカウントの紐付け。ランクは問い合わせ結果のキャッシュ。
+  `CREATE TABLE IF NOT EXISTS discord_links (
+     user_id TEXT PRIMARY KEY, puuid TEXT NOT NULL, name TEXT, tag TEXT, region TEXT, platform TEXT,
+     tier INTEGER, rr INTEGER, elo INTEGER, rank_updated_at INTEGER DEFAULT 0,
+     discovered_at INTEGER DEFAULT 0, linked_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS discord_links_puuid ON discord_links (puuid)`,
+  `CREATE TABLE IF NOT EXISTS lobbies (
+     lobby_id TEXT PRIMARY KEY, guild_id TEXT, channel_id TEXT, host_id TEXT,
+     state TEXT NOT NULL DEFAULT 'open', variant INTEGER DEFAULT 0, map TEXT, flip INTEGER DEFAULT 0, created_at INTEGER)`,
+  `CREATE TABLE IF NOT EXISTS lobby_members (
+     lobby_id TEXT NOT NULL, user_id TEXT NOT NULL, joined_at INTEGER, PRIMARY KEY (lobby_id, user_id))`,
+];
+
+/** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
+const MIGRATIONS = [DDL_V1, DDL_V2];
+
 let ready: Promise<void> | null = null;
 
 /** テーブルが無ければ作る。デプロイ後に手動でマイグレーションを流す必要をなくすため、コード側で保証する。 */
 export function ensureSchema(db: D1Database): Promise<void> {
   ready ??= (async () => {
+    let current = 0;
     try {
       const row = await db.prepare(`SELECT value FROM meta WHERE key = 'schema'`).first<{ value: string }>();
-      if (row?.value === SCHEMA_VERSION) return;
+      current = Number(row?.value) || 0;
     } catch {
       // meta テーブルがまだ無い
     }
-    await db.batch([
-      ...DDL.map((sql) => db.prepare(sql)),
-      db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)`).bind(SCHEMA_VERSION),
-    ]);
+    for (let v = current; v < MIGRATIONS.length; v++) {
+      await db.batch([
+        ...MIGRATIONS[v].map((sql) => db.prepare(sql)),
+        db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)`).bind(String(v + 1)),
+      ]);
+    }
   })().catch((e) => {
     ready = null;
     throw e;

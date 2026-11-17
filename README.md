@@ -30,6 +30,45 @@ Cloudflare Workers + D1 で動き、データは [HenrikDev API](https://docs.he
 - 取り込んだ試合の生データも D1 に保存するので、指標の定義を変えても作り直せる
 - テーブルは起動時にコードが自動作成する（マイグレーションの手動実行は不要）
 
+## Discord チーム分け bot
+
+カスタムの参加者を募集し、レートとロールが釣り合うようにチームを分ける。常駐プロセスは不要で、サイトと同じ Worker の中で動く。
+
+| コマンド | 内容 |
+|---|---|
+| `/link riot_id:名前#タグ` | 自分の Riot ID を登録する。参加に必要 |
+| `/unlink` | 登録を解除する |
+| `/rating` | チーム分けに使われる自分のレートと内訳を見る |
+| `/custom` | 募集メッセージを出す。「参加」「抜ける」「チーム分け」のボタンが付く |
+
+チーム分け後は「振り直し」（次に釣り合う案へ）、「マップ変更」、「募集に戻る」ができる。
+
+### レートの決め方
+
+- **土台**: 現在のランク。1段階 = 100、RR をそのまま足す（プラチナ1・23RR = 1223）
+- **補正**: 直近の成績。取り込み済みの直近20試合（コンペ・アンレート・Premier、120日以内）について「自分の ACS ÷ その試合の10人の平均 ACS」を平均し、1.0 からのずれ × 400 を足す。上限は ±150、10試合未満のうちは試合数に比例して弱める
+- **ロール**: 同じ試合群で一番多く使ったエージェントのロール
+- **分け方**: 全ての分け方を調べ、「合計レートの差 + ロールの偏り1人につき25点」が最小の案を選ぶ。奇数人数のときは人数の少ない側に強い人が寄る
+
+定数は `src/balance.ts`、エージェントとロールの対応は `src/agents.ts` にある。対応表にないエージェントは「ロール不明」として扱われる。
+
+登録した人の試合は、1時間に1回ほど新着を確認して取り込む。登録直後は補正とロールが無く、取り込みが進むと反映される。
+
+### セットアップ
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) で **New Application** を作る
+2. **General Information** の Application ID と Public Key、**Bot** タブの Token（Reset Token で発行）を控える
+3. Cloudflare の Worker の **Settings → Variables and Secrets** に、種類 Secret で3つ追加する
+   - `DISCORD_APP_ID`、`DISCORD_PUBLIC_KEY`、`DISCORD_BOT_TOKEN`
+4. Developer Portal の **General Information → Interactions Endpoint URL** に `https://<サイトのドメイン>/api/discord` を入れて保存する
+   - 保存時に Discord が疎通確認を送り、その時にスラッシュコマンドが自動登録される
+5. **Installation** タブで Guild Install のスコープを `applications.commands` にし、表示される Install Link からサーバーに追加する
+
+### 注意
+
+- `/link` は Riot ID の持ち主かどうかを確認しない（確認には Riot の公式ログイン連携が必要）。身内のサーバー向けの作り
+- VC への自動振り分けは未対応
+
 ## デプロイ（Cloudflare）
 
 1. Cloudflare ダッシュボードの **Workers & Pages → Create → Import a repository** でこのリポジトリを選ぶ
@@ -50,7 +89,7 @@ npm install
 echo 'HENRIK_API_KEY=HDEV-xxxx' > .dev.vars   # コミットしない
 npm run sync:local                            # 実データをローカル D1 に取り込む
 npm run dev                                   # http://localhost:8787
-npm test                                      # 指標計算の単体テスト
+npm test                                      # 指標計算とチーム分けの単体テスト
 npm run sync:local -- --recompute             # 保存済みの生データから再集計
 ```
 

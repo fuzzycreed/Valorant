@@ -1,5 +1,7 @@
 import { ensureSchema, ingestStatements, type Env } from "./db";
+import { queueRecentMatches } from "./discord";
 import { Henrik, HenrikError } from "./henrik";
+import { refreshRanks, type Link } from "./rating";
 import { computeMatch } from "./stats";
 
 const DISCOVER_INTERVAL_MS = 5 * 60 * 1000;
@@ -7,6 +9,9 @@ const RANK_INTERVAL_MS = 30 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const HISTORY_PAGE = 20;
 const HISTORY_MAX = 100;
+/** Discord で登録された人の新着確認: 1人あたりの間隔と、1回の同期で確認する人数。 */
+const LINKED_INTERVAL_MS = 60 * 60 * 1000;
+const LINKED_PER_STEP = 2;
 
 export interface SyncResult {
   discovered: number;
@@ -163,6 +168,17 @@ export async function syncStep(env: Env, opts: { maxMatches?: number; forceDisco
     for (const p of await trackedPlayers(env, api)) {
       if (!opts.forceDiscover && now - (p.discovered_at ?? 0) < DISCOVER_INTERVAL_MS) continue;
       out.discovered += await discover(env, api, p);
+    }
+
+    // Discord で登録された人は、確認が古い順に少人数ずつ見る（API のレート制限に収めるため）
+    const linked = await env.DB.prepare(
+      `SELECT * FROM discord_links WHERE discovered_at < ? ORDER BY discovered_at LIMIT ?`,
+    )
+      .bind(now - LINKED_INTERVAL_MS, LINKED_PER_STEP)
+      .all<Link>();
+    for (const l of linked.results) {
+      out.discovered += await queueRecentMatches(env, api, l);
+      await refreshRanks(env, api, [l]);
     }
 
     const { results } = await env.DB.prepare(
