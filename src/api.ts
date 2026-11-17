@@ -59,13 +59,6 @@ function cte(q: URLSearchParams) {
   return { sql: `WITH f AS (SELECT * FROM player_matches WHERE ${f.where} ORDER BY started_at DESC${limit})`, params: f.params };
 }
 
-/** RIOT_IDS に書かれた本人の一覧。先頭がサイトを開いたときに表示されるプレイヤー。 */
-async function players(env: Env) {
-  const { results } = await env.DB.prepare(`SELECT * FROM players WHERE source = 'config' ORDER BY created_at`).all<any>();
-  const tracked = (env.RIOT_IDS ?? "").toLowerCase().split(",").map((s) => s.trim());
-  return json(results.filter((p) => tracked.includes(`${p.name}#${p.tag}`.toLowerCase())).map(playerView));
-}
-
 const playerView = (p: any) => ({
   puuid: p.puuid,
   name: p.name,
@@ -80,22 +73,6 @@ const playerView = (p: any) => ({
 async function player(env: Env, puuid: string) {
   const row = await env.DB.prepare(`SELECT * FROM players WHERE puuid = ?`).bind(puuid).first<any>();
   return row ? json(playerView(row)) : json({ error: "このプレイヤーはまだ登録されていません。Riot ID で検索してください。" }, 404);
-}
-
-/** トップページと検索欄の候補に出す、登録済みプレイヤーの一覧（最近見られた順）。 */
-async function knownPlayers(env: Env) {
-  const { results } = await env.DB.prepare(
-    `SELECT p.puuid, p.name, p.tag, p.rank_json,
-            (SELECT COUNT(*) FROM player_matches m WHERE m.puuid = p.puuid AND m.round_based = 1) AS games,
-            (SELECT MAX(m.started_at) FROM player_matches m WHERE m.puuid = p.puuid) AS last_played
-     FROM players p ORDER BY p.last_viewed_at DESC, p.created_at LIMIT 50`,
-  ).all<any>();
-  return json(
-    results.map((p) => {
-      const cur = p.rank_json ? JSON.parse(p.rank_json)?.current : null;
-      return { puuid: p.puuid, name: p.name, tag: p.tag, tier: cur?.tier?.id ?? null, rr: cur?.rr ?? null, games: p.games, last_played: p.last_played };
-    }),
-  );
 }
 
 /**
@@ -261,12 +238,10 @@ export async function handleApi(req: Request, env: Env, url: URL): Promise<Respo
   const path = url.pathname.replace(/^\/api/, "");
   const q = url.searchParams;
   if (req.method === "GET") {
-    if (path === "/players") return players(env);
     if (path === "/stats") return stats(env, q);
     if (path === "/matches") return matches(env, q);
     if (path === "/mmr") return mmr(env, q);
     if (path === "/status") return status(env, q);
-    if (path === "/players/known") return knownPlayers(env);
     const pm = path.match(/^\/player\/([0-9a-f-]{36})$/);
     if (pm) return player(env, pm[1]);
     const m = path.match(/^\/match\/([0-9a-f-]{36})$/);

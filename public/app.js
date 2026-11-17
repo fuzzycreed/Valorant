@@ -7,7 +7,7 @@ const esc = (s) =>
 async function api(path, opt) {
   const r = await fetch("/api" + path, opt);
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error || r.statusText);
+  if (!r.ok) throw Object.assign(new Error(body.error || r.statusText), { status: r.status });
   return body;
 }
 
@@ -208,32 +208,18 @@ $("#filters").addEventListener("change", (e) => {
 
 // ---------- トップページ ----------
 
-async function viewTop() {
+function viewTop() {
   $("#filters").hidden = true;
-  const known = await loadKnown();
   $("#view").innerHTML = `
     <section class="card hero">
       <h1>プレイヤーを検索</h1>
       <form class="formrow" id="top-search">
-        <input type="text" name="riot_id" list="known" placeholder="Riot ID（例: name#tag）" autocomplete="off" maxlength="60" aria-label="Riot ID で検索">
+        <input type="text" name="riot_id" placeholder="Riot ID（例: name#tag）" autocomplete="off" maxlength="60" aria-label="Riot ID で検索">
         <button class="btn primary">検索</button>
       </form>
-      <p class="muted">Riot ID を入力すると、その人の戦績を取り込んで表示します。一度検索した人は保存され、次からはすぐに開けます。</p>
-    </section>
-    <section class="card">
-      <h2>登録済みのプレイヤー</h2>
-      <div id="known-list">${knownListHtml(known)}</div>
+      <p class="muted">Riot ID を入力すると、その人の戦績を取り込んで表示します。一度検索した人のデータは保存され、次からはすぐに開けます。</p>
     </section>`;
 }
-const knownListHtml = (known) =>
-  known.length
-    ? `<div class="plist">${known.map((p) => `
-        <a class="pcard" href="${playerHref(p.puuid)}">
-          <span class="pname">${esc(p.name)}<span class="muted">#${esc(p.tag)}</span></span>
-          <span class="pmeta">${p.tier ? rankBadge(p.tier, p.rr) : `<span class="muted">ランクなし</span>`}</span>
-          <span class="pmeta muted">${p.games} 試合${p.last_played ? ` ・ 最終 ${esc(dayFmt.format(p.last_played))}` : ""}</span>
-        </a>`).join("")}</div>`
-    : `<div class="empty">まだ誰も登録されていません。上の欄から検索してください</div>`;
 
 // ---------- 概要 ----------
 
@@ -497,7 +483,10 @@ async function viewMatch(id) {
 // ---------- チーム分け ----------
 
 const ROLES = { duelist: "デュエリスト", initiator: "イニシエーター", controller: "コントローラー", sentinel: "センチネル" };
-const team = { players: [], maps: [], selected: new Set(), guests: [], result: null, variant: 0, flip: 0, map: null, msg: "" };
+const team = { players: [], maps: [], selected: new Set(), guests: [], result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
+/** まとめて追加できる人数の上限と、新規登録どうしの間隔（外部 API のレート制限に収めるため）。 */
+const TEAM_ADD_MAX = 20;
+const TEAM_ADD_GAP_MS = 6000;
 try {
   const saved = JSON.parse(localStorage.getItem("team") ?? "{}");
   team.selected = new Set(saved.selected ?? []);
@@ -560,10 +549,10 @@ function renderTeams() {
       <div class="card c7">
         <h2><span>参加者を選ぶ</span><small>${n} / 10 人を選択中</small></h2>
         <form class="formrow" id="team-add">
-          <input type="text" name="riot_id" placeholder="Riot ID で追加（例: name#tag）" autocomplete="off" maxlength="60" aria-label="Riot ID">
-          <button class="btn">追加</button>
+          <textarea name="riot_ids" rows="2" maxlength="1500" placeholder="Riot ID で追加（例: name#tag）&#10;複数人は改行かカンマで区切ってまとめて追加できます" aria-label="Riot ID（複数可）"${team.adding ? " disabled" : ""}></textarea>
+          <button class="btn"${team.adding ? " disabled" : ""}>追加</button>
         </form>
-        <div class="msg" id="team-msg">${esc(team.msg)}</div>
+        <div class="msg" id="team-msg">${esc(team.msg)}${team.failed.length ? `<ul class="fails">${team.failed.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}</div>
         ${team.players.length ? `<div class="tablewrap"><table>
           <thead><tr><th></th><th class="l">プレイヤー</th><th class="l">ランク</th><th class="l">ロール</th><th>レート</th><th></th></tr></thead>
           <tbody>${team.players.map((p) => `<tr class="pick" data-id="${esc(p.id)}">
@@ -608,31 +597,75 @@ async function viewTeams() {
 
 const changed = () => { team.result = null; saveTeam(); renderTeams(); };
 
+/** 入力欄の文字列を Riot ID の一覧にする。改行・カンマ・読点で区切り、重複は除く（名前には空白を含められる）。 */
+function parseRiotIds(text) {
+  const seen = new Set();
+  return text.split(/[\n,、，]+/).map((x) => x.trim()).filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+}
+
+/** Riot ID を順番に登録する。登録済みの人は即座に、新規の人は間隔を空けて1人ずつ処理する。 */
+async function addPlayers(ids) {
+  const skipped = ids.length - TEAM_ADD_MAX;
+  ids = ids.slice(0, TEAM_ADD_MAX);
+  team.adding = true;
+  team.failed = [];
+  let added = 0;
+  const onTeams = () => location.hash === "#/teams";
+  const show = (msg) => { team.msg = msg; if (onTeams()) renderTeams(); };
+  for (const [k, riotId] of ids.entries()) {
+    const label = ids.length > 1 ? `（${k + 1} / ${ids.length} 人目）` : "";
+    show(`「${riotId}」を検索しています…${label}`);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { player, fresh } = await api("/team/players", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ riot_id: riotId }) });
+        team.players = team.players.some((p) => p.id === player.id) ? team.players.map((p) => (p.id === player.id ? player : p)) : [...team.players, player];
+        if (teamSize() < 10 || team.selected.has(player.id)) team.selected.add(player.id);
+        added++;
+        if (fresh && k < ids.length - 1) {
+          show(`${player.name}#${player.tag} を追加しました。次の人を検索します…${label}`);
+          await wait(TEAM_ADD_GAP_MS);
+        }
+        break;
+      } catch (err) {
+        // 回数制限に当たったら少し待ってやり直す。それ以外（見つからない等）は次の人へ進む
+        if (err.status === 429 && attempt < 2) {
+          show(`API の回数制限に達しました。30秒待って再開します…${label}`);
+          await wait(30000);
+          continue;
+        }
+        team.failed.push(`${riotId}: ${err.message}`);
+        break;
+      }
+    }
+  }
+  team.adding = false;
+  team.msg = `${added} 人を追加しました` + (team.failed.length ? `。${team.failed.length} 人は追加できませんでした` : "") + (skipped > 0 ? `。一度に追加できるのは ${TEAM_ADD_MAX} 人までです（残り ${skipped} 人は未処理）` : "");
+  team.result = null;
+  saveTeam();
+  if (onTeams()) renderTeams();
+}
+
 $("#view").addEventListener("submit", async (e) => {
   const form = e.target;
   if (form.id === "team-add") {
     e.preventDefault();
-    const riotId = form.riot_id.value.trim();
-    if (!riotId) return;
-    form.querySelector("button").disabled = true;
-    $("#team-msg").textContent = "検索しています…";
-    try {
-      const { player } = await api("/team/players", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ riot_id: riotId }) });
-      if (!team.players.some((p) => p.id === player.id)) team.players.push(player);
-      else team.players = team.players.map((p) => (p.id === player.id ? player : p));
-      if (teamSize() < 10) team.selected.add(player.id);
-      team.msg = `${player.name}#${player.tag} を追加しました`;
-    } catch (err) {
-      team.msg = err.message;
-    }
-    changed();
-    $("#team-add input")?.focus();
+    if (team.adding) return;
+    const ids = parseRiotIds(form.riot_ids.value);
+    if (ids.length) addPlayers(ids);
   } else if (form.id === "team-guest") {
     e.preventDefault();
     const name = form.name.value.trim();
     if (!name || teamSize() >= 10) return;
     team.guests.push({ name, tier: Number(form.tier.value), role: form.role.value });
     changed();
+  }
+});
+
+$("#view").addEventListener("keydown", (e) => {
+  // Riot ID の入力欄: Enter で追加、Shift+Enter で改行
+  if (e.target.name === "riot_ids" && e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    e.target.form.requestSubmit();
   }
 });
 
@@ -747,12 +780,7 @@ async function drain() {
   // 途中で別のページに切り替えられていたら、そちらの同期を続けて始める
   if (switched()) return drain();
   refreshStatus();
-  if (!puuid) {
-    // トップページ: 検索欄に入力中の文字を消さないよう、一覧の部分だけ更新する
-    const list = $("#known-list");
-    if (list) list.innerHTML = knownListHtml(await loadKnown());
-    return;
-  }
+  if (!puuid) return; // トップページは再描画しない（検索欄に入力中の文字を消さないため）
   await reloadPlayer();
   if (onStatsView()) route();
 }
@@ -775,11 +803,6 @@ function setPlayer(p) {
   // エージェントやマップの絞り込みは人ごとに候補が違うので、切り替えたら初期値に戻す
   if (switched) state.filters = { queue: "competitive", season: "", agent: "", map: "", last: "" };
   renderPlayer();
-}
-async function loadKnown() {
-  const known = await api("/players/known").catch(() => []);
-  $("#known").innerHTML = known.map((p) => `<option value="${esc(p.name)}#${esc(p.tag)}"></option>`).join("");
-  return known;
 }
 /** Riot ID からプレイヤーを探し、その人のページへ移動する。 */
 async function find(riotId) {

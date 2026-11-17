@@ -82,7 +82,7 @@ export async function recentMaps(env: Env): Promise<string[]> {
 }
 
 const LOOKUP_WINDOW_MS = 10 * 60 * 1000;
-const LOOKUP_LIMIT = 15;
+const LOOKUP_LIMIT = 40;
 
 /**
  * Riot ID 検索の回数を10分単位で数える（公開サイトなので API の使いすぎを防ぐ）。

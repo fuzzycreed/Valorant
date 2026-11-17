@@ -64,7 +64,8 @@ async function addPlayer(req: Request, env: Env) {
   if (!riotId || riotId.length > 60 || !riotId.includes("#")) return fail(400, "Riot ID は「名前#タグ」の形式で入力してください。");
 
   const links = await allLinks(env);
-  const respond = async (link: Link) => json({ player: view((await ratePlayers(env, [link]))[0], link) });
+  // fresh: 外部 API を呼んで新しく登録したか。画面側がまとめて追加するときの間隔調整に使う
+  const respond = async (link: Link, fresh = false) => json({ player: view((await ratePlayers(env, [link]))[0], link), fresh });
 
   // すでに登録済みなら API を呼ばずに返す
   const known = links.find((l) => `${l.name}#${l.tag}`.toLowerCase() === riotId.toLowerCase());
@@ -86,10 +87,10 @@ async function addPlayer(req: Request, env: Env) {
   const same = links.find((l) => l.puuid === found.account.puuid);
   if (same) {
     await refreshRanks(env, api, [same]);
-    return respond(same);
+    return respond(same, true);
   }
   const { link } = await saveLink(env, api, WEB_PREFIX + found.account.puuid, found.account);
-  return respond(link);
+  return respond(link, true);
 }
 
 async function removePlayer(env: Env, puuid: string) {
