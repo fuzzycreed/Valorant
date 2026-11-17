@@ -452,6 +452,200 @@ async function viewMatch(id) {
   show(0);
 }
 
+// ---------- チーム分け ----------
+
+const ROLES = { duelist: "デュエリスト", initiator: "イニシエーター", controller: "コントローラー", sentinel: "センチネル" };
+const team = { players: [], maps: [], selected: new Set(), guests: [], result: null, variant: 0, flip: 0, map: null, msg: "" };
+try {
+  const saved = JSON.parse(localStorage.getItem("team") ?? "{}");
+  team.selected = new Set(saved.selected ?? []);
+  team.guests = saved.guests ?? [];
+} catch {}
+const saveTeam = () => {
+  try { localStorage.setItem("team", JSON.stringify({ selected: [...team.selected], guests: team.guests })); } catch {}
+};
+const teamRank = (p) =>
+  p.guest ? tierName(p.tier) : p.tier == null ? "ランクなし（仮）" : p.estimated ? `${tierName(p.tier)}（過去）` : `${tierName(p.tier)} ${p.rr ?? 0}RR`;
+const teamSize = () => team.selected.size + team.guests.length;
+const pickMap = (except) => {
+  const pool = team.maps.length > 1 ? team.maps.filter((m) => m !== except) : team.maps;
+  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+};
+
+function teamResultHtml() {
+  const r = team.result;
+  if (!r) return `<div class="empty">参加者を2人以上選んで「チーム分けする」を押してください</div>`;
+  const o = r.options[team.variant % r.options.length];
+  const by = new Map(r.players.map((p) => [p.id, p]));
+  const [atk, def] = team.flip ? [o.b, o.a] : [o.a, o.b];
+  const block = (label, ids) => {
+    const members = ids.map((id) => by.get(id)).sort((x, y) => y.rating - x.rating);
+    const avg = Math.round(members.reduce((a, p) => a + p.rating, 0) / members.length);
+    return `<div class="team"><h3>${label}<small>${members.length}人 ・ 平均 ${avg}</small></h3><ul>${members.map((p) =>
+      `<li><span>${esc(p.name)}${p.tag ? `<span class="muted">#${esc(p.tag)}</span>` : ` <span class="pill">ゲスト</span>`}</span>
+           <span>${esc(teamRank(p))} ・ ${esc(ROLES[p.role] ?? "ロール不明")} ・ ${p.rating}</span></li>`).join("")}</ul></div>`;
+  };
+  return `
+    <p class="summary">${team.map ? `マップ: <b>${esc(team.map)}</b> ・ ` : ""}${atk.length === def.length
+      ? `平均レートの差 <b>${o.diff}</b>`
+      : `人数が違うので合計レートで釣り合わせています（合計の差 <b>${o.sumDiff}</b>）`}
+      <span class="muted">（案 ${(team.variant % r.options.length) + 1}/${r.options.length}）</span></p>
+    ${block("アタッカー側", atk)}${block("ディフェンダー側", def)}
+    <div class="actions">
+      <button type="button" class="btn" data-act="reroll"${r.options.length < 2 ? " disabled" : ""}>振り直し</button>
+      <button type="button" class="btn" data-act="remap"${team.maps.length < 2 ? " disabled" : ""}>マップ変更</button>
+      <button type="button" class="btn" data-act="flip">攻守を入れ替え</button>
+      <button type="button" class="btn" data-act="copy">結果をコピー</button>
+    </div>`;
+}
+
+function teamResultText() {
+  const r = team.result, o = r.options[team.variant % r.options.length];
+  const by = new Map(r.players.map((p) => [p.id, p]));
+  const [atk, def] = team.flip ? [o.b, o.a] : [o.a, o.b];
+  const block = (label, ids) => {
+    const members = ids.map((id) => by.get(id)).sort((x, y) => y.rating - x.rating);
+    const avg = Math.round(members.reduce((a, p) => a + p.rating, 0) / members.length);
+    return [`${label}（平均 ${avg}）`, ...members.map((p) => `・${p.name}${p.tag ? "#" + p.tag : ""}（${teamRank(p)} / ${ROLES[p.role] ?? "ロール不明"}）`)].join("\n");
+  };
+  return [`【チーム分け】${team.map ? `マップ: ${team.map}` : ""}`, block("アタッカー側", atk), block("ディフェンダー側", def)].join("\n");
+}
+
+function renderTeams() {
+  const n = teamSize();
+  $("#view").innerHTML = `
+    <section class="grid">
+      <div class="card c7">
+        <h2><span>参加者を選ぶ</span><small>${n} / 10 人を選択中</small></h2>
+        <form class="formrow" id="team-add">
+          <input type="text" name="riot_id" placeholder="Riot ID で追加（例: name#tag）" autocomplete="off" maxlength="60" aria-label="Riot ID">
+          <button class="btn">追加</button>
+        </form>
+        <div class="msg" id="team-msg">${esc(team.msg)}</div>
+        ${team.players.length ? `<div class="tablewrap"><table>
+          <thead><tr><th></th><th class="l">プレイヤー</th><th class="l">ランク</th><th class="l">ロール</th><th>レート</th><th></th></tr></thead>
+          <tbody>${team.players.map((p) => `<tr class="pick" data-id="${esc(p.id)}">
+            <td><input type="checkbox" ${team.selected.has(p.id) ? "checked" : ""} aria-label="${esc(p.name)} を選ぶ"></td>
+            <td class="l">${esc(p.name)}<span class="muted">#${esc(p.tag)}</span></td>
+            <td class="l">${esc(teamRank(p))}</td><td class="l">${esc(ROLES[p.role] ?? "不明")}</td>
+            <td title="ランク ${p.base} ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合）">${p.rating}</td>
+            <td>${p.removable ? `<button type="button" class="btn small" data-act="remove">削除</button>` : ""}</td></tr>`).join("")}
+          </tbody></table></div>` : `<div class="empty">まだ誰も登録されていません。上の欄に Riot ID を入れて追加してください</div>`}
+
+        <div class="sub">ゲスト<small>Riot ID を使わず、名前とランクを手入力する</small></div>
+        <form class="formrow" id="team-guest">
+          <input type="text" name="name" placeholder="名前" maxlength="24" aria-label="ゲストの名前">
+          <select name="tier" aria-label="ランク">${Array.from({ length: 25 }, (_, k) => k + 3).map((t) => `<option value="${t}"${t === 13 ? " selected" : ""}>${tierName(t)}</option>`).join("")}</select>
+          <select name="role" aria-label="ロール"><option value="">ロール不明</option>${Object.entries(ROLES).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+          <button class="btn">追加</button>
+        </form>
+        ${team.guests.length ? `<div class="tablewrap"><table><tbody>${team.guests.map((g, k) => `<tr>
+          <td>${esc(g.name)} <span class="pill">ゲスト</span></td><td class="l">${esc(tierName(g.tier))}</td>
+          <td class="l">${esc(ROLES[g.role] ?? "ロール不明")}</td><td>${(g.tier - 3) * 100 + 50}</td>
+          <td><button type="button" class="btn small" data-act="guest-remove" data-k="${k}">削除</button></td></tr>`).join("")}</tbody></table></div>` : ""}
+      </div>
+      <div class="card c5">
+        <h2><span>チーム分け</span>
+          <button type="button" class="btn primary" data-act="split"${n < 2 || n > 10 ? " disabled" : ""}>チーム分けする</button></h2>
+        <div id="team-result">${teamResultHtml()}</div>
+        <p class="muted" style="font-size:12px;margin:14px 0 0">レート = ランク（100RRで1段階）＋ 直近の成績による補正（最大±150）。レートの数字にカーソルを合わせると内訳が出ます。追加した人の試合は順次取り込まれ、補正とロールに反映されます。</p>
+      </div>
+    </section>`;
+}
+
+async function viewTeams() {
+  $("#filters").hidden = true;
+  const d = await api("/team/players");
+  team.players = d.players;
+  team.maps = d.maps;
+  const ids = new Set(d.players.map((p) => p.id));
+  for (const id of [...team.selected]) if (!ids.has(id)) team.selected.delete(id);
+  renderTeams();
+}
+
+const changed = () => { team.result = null; saveTeam(); renderTeams(); };
+
+$("#view").addEventListener("submit", async (e) => {
+  const form = e.target;
+  if (form.id === "team-add") {
+    e.preventDefault();
+    const riotId = form.riot_id.value.trim();
+    if (!riotId) return;
+    form.querySelector("button").disabled = true;
+    $("#team-msg").textContent = "検索しています…";
+    try {
+      const { player } = await api("/team/players", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ riot_id: riotId }) });
+      if (!team.players.some((p) => p.id === player.id)) team.players.push(player);
+      else team.players = team.players.map((p) => (p.id === player.id ? player : p));
+      if (teamSize() < 10) team.selected.add(player.id);
+      team.msg = `${player.name}#${player.tag} を追加しました`;
+    } catch (err) {
+      team.msg = err.message;
+    }
+    changed();
+    $("#team-add input")?.focus();
+  } else if (form.id === "team-guest") {
+    e.preventDefault();
+    const name = form.name.value.trim();
+    if (!name || teamSize() >= 10) return;
+    team.guests.push({ name, tier: Number(form.tier.value), role: form.role.value });
+    changed();
+  }
+});
+
+$("#view").addEventListener("click", async (e) => {
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  const row = e.target.closest("tr.pick");
+  if (act === "remove" && row) {
+    try {
+      await api("/team/players/" + row.dataset.id, { method: "DELETE" });
+      team.players = team.players.filter((p) => p.id !== row.dataset.id);
+      team.selected.delete(row.dataset.id);
+      team.msg = "";
+    } catch (err) {
+      team.msg = err.message;
+    }
+    return changed();
+  }
+  if (act === "guest-remove") {
+    team.guests.splice(Number(e.target.dataset.k), 1);
+    return changed();
+  }
+  if (act === "split") {
+    e.target.disabled = true;
+    try {
+      team.result = await api("/team/split", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...team.selected], guests: team.guests }) });
+      team.variant = 0;
+      team.flip = Math.random() < 0.5 ? 1 : 0;
+      team.maps = team.result.maps;
+      team.map = pickMap(null);
+      team.msg = "";
+    } catch (err) {
+      team.result = null;
+      team.msg = err.message;
+    }
+    return renderTeams();
+  }
+  if (act === "reroll") { team.variant++; return ($("#team-result").innerHTML = teamResultHtml()); }
+  if (act === "remap") { team.map = pickMap(team.map); return ($("#team-result").innerHTML = teamResultHtml()); }
+  if (act === "flip") { team.flip ^= 1; return ($("#team-result").innerHTML = teamResultHtml()); }
+  if (act === "copy") {
+    try {
+      await navigator.clipboard.writeText(teamResultText());
+      e.target.textContent = "コピーしました";
+    } catch {
+      e.target.textContent = "コピーできませんでした";
+    }
+    return;
+  }
+  if (row && !act) {
+    const id = row.dataset.id;
+    if (team.selected.has(id)) team.selected.delete(id);
+    else if (teamSize() < 10) team.selected.add(id);
+    changed();
+  }
+});
+
 // ---------- 同期 ----------
 
 function timeAgo(ts) {
@@ -520,8 +714,16 @@ async function route() {
   hideTip();
   onResize = null;
   const hash = location.hash.replace(/^#/, "") || "/";
-  const tab = hash.startsWith("/match") ? "matches" : "overview";
+  const tab = hash === "/teams" ? "teams" : hash.startsWith("/match") ? "matches" : "overview";
   for (const a of $("#tabs").children) a.classList.toggle("on", a.dataset.tab === tab);
+  if (tab === "teams") {
+    try {
+      await viewTeams();
+    } catch (e) {
+      $("#view").innerHTML = `<div class="card empty">読み込みに失敗しました: ${esc(e.message)}</div>`;
+    }
+    return;
+  }
   if (!state.player) {
     $("#filters").hidden = true;
     $("#view").innerHTML = `<div class="card empty">まだデータがありません。初回の同期を実行しています…</div>`;

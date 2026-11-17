@@ -3,18 +3,15 @@
 import { ROLE_LABEL } from "./agents";
 import { balance, rerollOptions } from "./balance";
 import { ensureSchema, type Env } from "./db";
-import { Henrik, HenrikError } from "./henrik";
+import { Henrik } from "./henrik";
 import { isStale, ratePlayers, refreshRanks, type Link, type Rated } from "./rating";
+import { findAccount, recentMaps, saveLink, WEB_PREFIX } from "./roster";
 import { tierName } from "./tiers";
 
 const COMMANDS_VERSION = "1";
 const MAX_MEMBERS = 10;
 const EPHEMERAL = 64;
 const COLOR = 0x3987e5;
-const MAP_WINDOW_MS = 45 * 24 * 60 * 60 * 1000;
-/** /link 時に取り込み待ちへ積む直近の試合数。 */
-const LINK_BACKFILL = 10;
-export const LINKED_QUEUES = new Set(["competitive", "unrated", "premier"]);
 
 const COMMANDS = [
   {
@@ -177,75 +174,31 @@ async function lobbyLinks(env: Env, lobbyId: string): Promise<Link[]> {
   return results;
 }
 
-/** 追跡中のプレイヤーが最近コンペで遊んだマップから1つ選ぶ（現行のマッププールの近似）。 */
+/** 最近遊ばれているマップから1つ選ぶ。except と違うものを優先する。 */
 async function randomMap(env: Env, except: string | null): Promise<string | null> {
-  const { results } = await env.DB.prepare(
-    `SELECT DISTINCT map FROM matches WHERE queue = 'competitive' AND started_at > ? AND map != ''`,
-  )
-    .bind(Date.now() - MAP_WINDOW_MS)
-    .all<{ map: string }>();
-  const pool = results.map((r) => r.map).filter((m) => m !== except || results.length === 1);
+  const all = await recentMaps(env);
+  const pool = all.length > 1 ? all.filter((m) => m !== except) : all;
   return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
 }
 
 // ---------- コマンド ----------
 
 async function doLink(env: Env, userId: string, riotId: string): Promise<string> {
-  const at = riotId.lastIndexOf("#");
-  const name = riotId.slice(0, at).trim(), tag = riotId.slice(at + 1).trim();
-  if (at < 1 || !name || !tag) return "Riot ID は `名前#タグ` の形式で入力してください。";
   const api = new Henrik(env.HENRIK_API_KEY);
-  let acc: any;
-  try {
-    acc = (await api.account(name, tag)).data;
-  } catch (e) {
-    if (e instanceof HenrikError && e.status === 404) return `\`${name}#${tag}\` が見つかりませんでした。綴りを確認してください。`;
-    if (e instanceof HenrikError && e.status === 429) return "API が混み合っています。1分ほど待ってからもう一度試してください。";
-    throw e;
+  const found = await findAccount(api, riotId);
+  if (!found.ok) {
+    if (found.reason === "format") return "Riot ID は `名前#タグ` の形式で入力してください。";
+    if (found.reason === "not_found") return `\`${riotId.trim()}\` が見つかりませんでした。綴りを確認してください。`;
+    return "API が混み合っています。1分ほど待ってからもう一度試してください。";
   }
-  const link: Link = {
-    user_id: userId, puuid: acc.puuid, name: acc.name, tag: acc.tag,
-    region: acc.region ?? env.REGION, platform: env.PLATFORM, tier: null, rr: null, elo: null, rank_updated_at: 0,
-  };
-  const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO discord_links (user_id, puuid, name, tag, region, platform, linked_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (user_id) DO UPDATE SET puuid = excluded.puuid, name = excluded.name, tag = excluded.tag,
-       region = excluded.region, platform = excluded.platform, tier = NULL, rr = NULL, elo = NULL,
-       rank_updated_at = 0, discovered_at = 0, linked_at = excluded.linked_at`,
-  )
-    .bind(userId, link.puuid, link.name, link.tag, link.region, link.platform, now)
-    .run();
-  await refreshRanks(env, api, [link]);
-  let queued = 0;
-  try {
-    queued = await queueRecentMatches(env, api, link);
-  } catch (e) {
-    if (!(e instanceof HenrikError)) throw e;
-  }
+  const { link, queued } = await saveLink(env, api, userId, found.account);
+  // ウェブから同じアカウントが追加されていた場合は、Discord 側の登録に一本化する
+  await env.DB.prepare(`DELETE FROM discord_links WHERE user_id = ?`).bind(WEB_PREFIX + link.puuid).run();
   const rank = link.tier && link.tier >= 3 ? `${tierName(link.tier)} ${link.rr ?? 0}RR` : "ランクなし";
   return (
     `**${md(link.name)}#${md(link.tag)}** を登録しました。現在のランク: ${rank}` +
     (queued ? `\n直近 ${queued} 試合を取り込み待ちに追加しました。成績による補正とロールは、取り込みが進むと反映されます。` : "")
   );
-}
-
-/** 直近の試合IDを取り込み待ちに積み、次回の確認時刻を更新する。 */
-export async function queueRecentMatches(env: Env, api: Henrik, link: Pick<Link, "user_id" | "puuid" | "region">): Promise<number> {
-  const h = (await api.matchHistory(link.region, link.puuid, 0, 20)).data;
-  const found = ((h?.History ?? []) as any[])
-    .filter((e) => LINKED_QUEUES.has(e.QueueID))
-    .slice(0, LINK_BACKFILL)
-    .map((e) => ({ id: e.MatchID, t: e.GameStartTime ?? 0, q: e.QueueID }));
-  const now = Date.now();
-  const res = await env.DB.batch([
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO match_queue (match_id, region, started_at, queue, updated_at)
-       SELECT json_extract(value, '$.id'), ?1, json_extract(value, '$.t'), json_extract(value, '$.q'), ?2 FROM json_each(?3)`,
-    ).bind(link.region, now, JSON.stringify(found)),
-    env.DB.prepare(`UPDATE discord_links SET discovered_at = ? WHERE user_id = ?`).bind(now, link.user_id),
-  ]);
-  return res[0]?.meta?.changes ?? 0;
 }
 
 async function ratingText(env: Env, userId: string): Promise<string> {

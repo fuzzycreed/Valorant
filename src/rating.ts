@@ -26,6 +26,7 @@ export interface Link {
 
 export interface Rated {
   userId: string;
+  puuid: string;
   name: string;
   tag: string;
   tier: number | null;
@@ -115,6 +116,7 @@ export async function ratePlayers(env: Env, links: Link[]): Promise<Rated[]> {
     const base = x.base ?? fallback;
     return {
       userId: x.l.user_id,
+      puuid: x.l.puuid,
       name: x.l.name,
       tag: x.l.tag,
       tier: x.ranked ? x.l.tier : x.lastTier,

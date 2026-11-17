@@ -1,5 +1,5 @@
 import { ensureSchema, ingestStatements, type Env } from "./db";
-import { queueRecentMatches } from "./discord";
+import { queueRecentMatches } from "./roster";
 import { Henrik, HenrikError } from "./henrik";
 import { refreshRanks, type Link } from "./rating";
 import { computeMatch } from "./stats";
