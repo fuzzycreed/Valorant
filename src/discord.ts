@@ -52,7 +52,7 @@ async function verify(req: Request, body: string, publicKey: string): Promise<bo
   const ts = req.headers.get("X-Signature-Timestamp");
   if (!sig || !ts || !/^[0-9a-f]{128}$/i.test(sig)) return false;
   try {
-    const key = await crypto.subtle.importKey("raw", hex(publicKey), { name: "Ed25519" }, false, ["verify"]);
+    const key = await crypto.subtle.importKey("raw", hex(publicKey.trim()), { name: "Ed25519" }, false, ["verify"]);
     return await crypto.subtle.verify("Ed25519", key, hex(sig), new TextEncoder().encode(ts + body));
   } catch {
     return false;
@@ -61,18 +61,57 @@ async function verify(req: Request, body: string, publicKey: string): Promise<bo
 
 /** スラッシュコマンドを Discord に登録する。内容が変わったときだけ送る。 */
 export async function registerCommands(env: Env): Promise<boolean> {
-  if (!env.DISCORD_APP_ID || !env.DISCORD_BOT_TOKEN) return false;
+  // 設定画面で貼り付けたときに前後へ空白や改行が入っていても動くようにする
+  const appId = env.DISCORD_APP_ID?.trim(), token = env.DISCORD_BOT_TOKEN?.trim().replace(/^Bot\s+/i, "");
+  if (!appId || !token) return false;
   await ensureSchema(env.DB);
   const row = await env.DB.prepare(`SELECT value FROM meta WHERE key = 'discord_commands'`).first<{ value: string }>();
   if (row?.value === COMMANDS_VERSION) return false;
-  const res = await fetch(`${apiBase(env)}/applications/${env.DISCORD_APP_ID}/commands`, {
+  const res = await fetch(`${apiBase(env)}/applications/${appId}/commands`, {
     method: "PUT",
-    headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(COMMANDS),
   });
   if (!res.ok) throw new Error(`Discord コマンド登録に失敗: ${res.status} ${(await res.text()).slice(0, 200)}`);
   await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('discord_commands', ?)`).bind(COMMANDS_VERSION).run();
   return true;
+}
+
+/**
+ * 設定の状態を返す（ブラウザで /api/discord を開いて確認するためのもの）。
+ * 値そのものは返さず、設定されているか・形式が合っているかだけを示す。
+ */
+export async function discordStatus(env: Env, origin: string): Promise<Response> {
+  const key = env.DISCORD_PUBLIC_KEY?.trim() ?? "";
+  const appId = env.DISCORD_APP_ID?.trim() ?? "";
+  const token = env.DISCORD_BOT_TOKEN?.trim() ?? "";
+  const checks: Record<string, string> = {
+    DISCORD_PUBLIC_KEY: !key ? "未設定" : /^[0-9a-f]{64}$/i.test(key) ? "OK" : `形式が違います（64文字の英数字のはずが ${key.length} 文字。General Information の Public Key を入れてください）`,
+    DISCORD_APP_ID: !appId ? "未設定" : /^\d{17,20}$/.test(appId) ? "OK" : "形式が違います（数字だけのはず。General Information の Application ID を入れてください）",
+    DISCORD_BOT_TOKEN: !token ? "未設定" : token.split(".").length === 3 ? "OK" : "形式が違います（Bot タブの Token を入れてください）",
+  };
+  let commands = "未登録";
+  if (appId && token) {
+    try {
+      await registerCommands(env);
+      commands = "登録済み";
+    } catch (e) {
+      commands = `登録に失敗: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  } else commands = "未登録（DISCORD_APP_ID と DISCORD_BOT_TOKEN が必要）";
+  const ready = checks.DISCORD_PUBLIC_KEY === "OK";
+  const page = (data: unknown) =>
+    new Response(JSON.stringify(data, null, 2), {
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  return page({
+    "設定": checks,
+    "スラッシュコマンド": commands,
+    "Interactions Endpoint URL に入れる値": `${origin}/api/discord`,
+    "状態": ready
+      ? "このページが表示されていて DISCORD_PUBLIC_KEY が OK なら、Discord 側で URL を保存できるはずです。保存できない場合は Public Key が別のアプリのものでないか確認してください。"
+      : "DISCORD_PUBLIC_KEY を Secret として設定し、Deploy を押してからこのページを再読み込みしてください。",
+  });
 }
 
 /** 応答を保留にしたあと、元のメッセージを書き換える。 */

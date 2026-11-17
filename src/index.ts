@@ -1,6 +1,6 @@
 import { handleApi, json } from "./api";
 import type { Env } from "./db";
-import { handleDiscord, registerCommands } from "./discord";
+import { discordStatus, handleDiscord, registerCommands } from "./discord";
 import { syncStep } from "./sync";
 import { handleTeams } from "./teams";
 
@@ -10,6 +10,7 @@ export default {
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(req);
     try {
       if (url.pathname === "/api/discord" && req.method === "POST") return await handleDiscord(req, env, ctx);
+      if (url.pathname === "/api/discord" && req.method === "GET") return await discordStatus(env, url.origin);
       if (url.pathname.startsWith("/api/team/")) return await handleTeams(req, env, url.pathname.slice(4));
       if (url.pathname === "/api/sync" && req.method === "POST") {
         // 画面の「更新」ボタン用。新着検出は内部で5分に1回までに抑えられている。

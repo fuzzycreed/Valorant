@@ -103,6 +103,14 @@ Cloudflare Workers + D1 で動き、データは [HenrikDev API](https://docs.he
    - 保存時に Discord が疎通確認を送り、その時にスラッシュコマンドが自動登録される
 5. **Installation** タブで Guild Install のスコープを `applications.commands` にし、表示される Install Link からサーバーに追加する
 
+### うまくいかないとき
+
+ブラウザで `https://<サイトのドメイン>/api/discord` を開くと、3つの値が設定されているか・形式が合っているか、スラッシュコマンドが登録できたかが表示される（値そのものは表示されない）。
+
+- 「未設定」と出る: Secret を追加したあと Deploy を押していないか、変数名が違う
+- このページ自体が開けない、ログイン画面になる: Cloudflare Access などでサイト全体に制限がかかっている。Discord からのアクセスも止められるので、`/api/discord` を制限の対象から外す
+- 設定は全部 OK なのに Discord 側で URL を保存できない: Cloudflare のボット対策（Bot Fight Mode など）が Discord からのアクセスを止めている可能性がある。ドメインの Security 設定で無効にするか、Interactions Endpoint URL に Worker の `*.workers.dev` の URL を使う
+
 ### 注意
 
 - `/link` もウェブからの追加も、Riot ID の持ち主かどうかは確認しない（確認には Riot の公式ログイン連携が必要）。身内向けの作り
