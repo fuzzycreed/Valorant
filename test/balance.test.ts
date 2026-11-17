@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACS_PER_POINT, balance, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
+import { ACS_PER_POINT, balance, EXPECTED_FLOOR, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
 
 const P = (id: string, rating: number, role: Candidate["role"] = null): Candidate => ({ id, rating, role });
 
@@ -85,8 +85,8 @@ describe("perfAdjustment", () => {
     expect(perfAdjustment(many({ ratio: ROLE_ACS.initiator, role: "initiator", lobbyElo: 1500 }, 20), 1500)).toBe(0);
   });
   it("同じ ACS でも、デュエリストよりイニシエーターのほうが高く評価される", () => {
-    const duelist = perfAdjustment(many({ ratio: 1.05, role: "duelist", lobbyElo: 1500 }, 20), 1500);
-    const initiator = perfAdjustment(many({ ratio: 1.05, role: "initiator", lobbyElo: 1500 }, 20), 1500);
+    const duelist = perfAdjustment(many({ ratio: 1, role: "duelist", lobbyElo: 1500 }, 20), 1500);
+    const initiator = perfAdjustment(many({ ratio: 1, role: "initiator", lobbyElo: 1500 }, 20), 1500);
     expect(duelist).toBeLessThan(0);
     expect(initiator).toBeGreaterThan(0);
   });
@@ -99,11 +99,16 @@ describe("perfAdjustment", () => {
   });
   it("試合数が少ないうちは弱め、上限で頭打ち", () => {
     const s: PerfSample = { ratio: 1.1, role: null, lobbyElo: 1500 };
-    const full = 0.1 / ACS_PER_POINT; // 約174点
+    const full = 0.1 / ACS_PER_POINT; // 約159点
     expect(perfAdjustment(many(s, 8), 1500)).toBe(Math.round(full / 2));
     expect(perfAdjustment(many(s, 24), 1500)).toBe(Math.round(full * 0.75));
     expect(perfAdjustment(many({ ...s, ratio: 2 }, 40), 1500)).toBe(300);
     expect(perfAdjustment(many({ ...s, ratio: 0.2 }, 40), 1500)).toBe(-300);
+  });
+  it("はるかに格上の試合でも、見込みの成績は下限で止まる", () => {
+    // 1000点上のランク帯: 見込みは下限の 0.55。そのとおりなら補正なし、0.4 しか取れなければマイナス
+    expect(perfAdjustment(many({ ratio: EXPECTED_FLOOR, role: null, lobbyElo: 2500 }, 20), 1500)).toBe(0);
+    expect(perfAdjustment(many({ ratio: 0.4, role: null, lobbyElo: 2500 }, 20), 1500)).toBeLessThan(-100);
   });
   it("相手のランク帯が分からない試合は、同格相手として扱う", () => {
     expect(perfAdjustment(many({ ratio: 1, role: null, lobbyElo: null }, 10), 1500)).toBe(0);

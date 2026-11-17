@@ -10,9 +10,9 @@ export const ROLE_LABEL: Record<Role, string> = {
 };
 
 const BY_ROLE: Record<Role, string[]> = {
-  duelist: ["Jett", "Phoenix", "Reyna", "Raze", "Yoru", "Neon", "Iso", "Waylay"],
+  duelist: ["Jett", "Phoenix", "Reyna", "Raze", "Yoru", "Neon", "Iso", "Waylay", "Hush"],
   initiator: ["Sova", "Breach", "Skye", "KAY/O", "Fade", "Gekko", "Tejo"],
-  controller: ["Brimstone", "Viper", "Omen", "Astra", "Harbor", "Clove"],
+  controller: ["Brimstone", "Viper", "Omen", "Astra", "Harbor", "Clove", "Miks"],
   sentinel: ["Killjoy", "Cypher", "Sage", "Chamber", "Deadlock", "Vyse", "Veto"],
 };
 

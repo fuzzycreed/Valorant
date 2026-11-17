@@ -86,12 +86,17 @@ export function rerollOptions(splits: Split[]): Split[] {
 }
 
 // ---------- 成績と実力の関係（実測値） ----------
-// 2アカウントのコンペ84試合・のべ840人分から求めた値。データが増えたら見直す。
+// 本人と、一緒に組んだ人・カスタムで同席した人のコンペ429試合・のべ4290人分から求めた値。データが増えたら見直す。
 
-/** 試合内の10人平均を 1.00 としたときの、ロールごとの平均 ACS。デュエリストは高く、イニシエーターは低く出る。 */
-export const ROLE_ACS: Record<Role, number> = { duelist: 1.106, initiator: 0.902, controller: 0.988, sentinel: 0.958 };
-/** レート1点差あたりの、ロール補正後 ACS の変化（100点差で約 5.7%）。 */
-export const ACS_PER_POINT = 0.000574;
+/** 試合内の10人平均を 1.00 としたときの、ロールごとの平均 ACS（ランク差の影響を除いた値）。デュエリストは高く、イニシエーターは低く出る。 */
+export const ROLE_ACS: Record<Role, number> = { duelist: 1.05, initiator: 0.89, controller: 1.03, sentinel: 0.98 };
+/** レート1点差あたりの、ロール補正後 ACS の変化（100点差で約 6.3%）。 */
+export const ACS_PER_POINT = 0.00063;
+/**
+ * 見込みの成績の下限。どれだけ格上の試合に入っても ACS はこの辺りで下げ止まる
+ * （実測: 試合の平均より 500点以上低い人でも、平均の 0.55〜0.65 倍は取れている）。
+ */
+export const EXPECTED_FLOOR = 0.55;
 
 /**
  * その場の平均からの離れ具合を、実際の効き方に直す。
@@ -132,7 +137,7 @@ export function perfAdjustment(samples: PerfSample[], base: number): number {
   let sum = 0;
   for (const s of samples) {
     const actual = s.ratio / (s.role ? ROLE_ACS[s.role] : 1);
-    const expected = 1 + ACS_PER_POINT * (s.lobbyElo == null ? 0 : impact(base - s.lobbyElo));
+    const expected = Math.max(EXPECTED_FLOOR, 1 + ACS_PER_POINT * (s.lobbyElo == null ? 0 : impact(base - s.lobbyElo)));
     sum += actual - expected;
   }
   const points = sum / n / ACS_PER_POINT;
