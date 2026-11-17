@@ -82,12 +82,20 @@ async function player(env: Env, puuid: string) {
   return row ? json(playerView(row)) : json({ error: "このプレイヤーはまだ登録されていません。Riot ID で検索してください。" }, 404);
 }
 
-/** 検索欄の候補に出す、登録済みプレイヤーの一覧（最近見られた順）。 */
+/** トップページと検索欄の候補に出す、登録済みプレイヤーの一覧（最近見られた順）。 */
 async function knownPlayers(env: Env) {
   const { results } = await env.DB.prepare(
-    `SELECT puuid, name, tag FROM players ORDER BY source = 'config' DESC, last_viewed_at DESC LIMIT 50`,
-  ).all();
-  return json(results);
+    `SELECT p.puuid, p.name, p.tag, p.rank_json,
+            (SELECT COUNT(*) FROM player_matches m WHERE m.puuid = p.puuid AND m.round_based = 1) AS games,
+            (SELECT MAX(m.started_at) FROM player_matches m WHERE m.puuid = p.puuid) AS last_played
+     FROM players p ORDER BY p.last_viewed_at DESC, p.created_at LIMIT 50`,
+  ).all<any>();
+  return json(
+    results.map((p) => {
+      const cur = p.rank_json ? JSON.parse(p.rank_json)?.current : null;
+      return { puuid: p.puuid, name: p.name, tag: p.tag, tier: cur?.tier?.id ?? null, rr: cur?.rr ?? null, games: p.games, last_played: p.last_played };
+    }),
+  );
 }
 
 /**
