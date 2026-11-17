@@ -130,6 +130,12 @@ async function editOriginal(env: Env, i: any, data: object): Promise<void> {
 const md = (s: string) => s.replace(/([\\*_`~|>\[\]])/g, "\\$1");
 const rankText = (r: Rated) =>
   r.tier == null ? "ランクなし（仮レート）" : r.estimated ? `${tierName(r.tier)}（過去）` : `${tierName(r.tier)} ${r.rr ?? 0}RR`;
+/** ランク由来の土台の内訳。現在ランクと過去の実績のどちらがどう効いたかを示す。 */
+function baseDetail(r: Rated): string {
+  if (r.current == null) return r.proven != null ? `現在ランクなし。過去の実績 ${r.proven} から算出` : "ランクの記録なし。参加者の平均で仮置き";
+  if (r.proven == null || r.proven <= r.current) return `現在 ${rankText(r)} = ${r.current}`;
+  return `現在 ${rankText(r)} = ${r.current} を、過去の実績 ${r.proven} の側へ寄せた値`;
+}
 const playerLine = (r: Rated) =>
   `<@${r.userId}> **${md(r.name)}#${md(r.tag)}** ・ ${rankText(r)} ・ ${r.role ? ROLE_LABEL[r.role] : "ロール不明"} ・ レート ${r.rating}`;
 const button = (label: string, id: string, style: number, disabled = false) => ({ type: 2, label, custom_id: id, style, disabled });
@@ -186,7 +192,7 @@ function splitMessage(lobby: Lobby, rated: Rated[]) {
           { name: `アタッカー側 ・ 平均 ${a.avg}`, value: a.value },
           { name: `ディフェンダー側 ・ 平均 ${d.avg}`, value: d.value },
         ],
-        footer: { text: "レート = ランク（100RRで1段階）＋ 直近の成績による補正（最大±150）" },
+        footer: { text: "レート = ランク（現在と過去の実績から算出）＋ 直近の成績による補正（最大±150）。内訳は /rating" },
       },
     ],
     components: [
@@ -246,7 +252,7 @@ async function ratingText(env: Env, userId: string): Promise<string> {
   const [r] = await ratePlayers(env, [link]);
   return [
     `**${md(r.name)}#${md(r.tag)}** のレート: **${r.rating}**`,
-    `・ランク由来: ${r.base}（${rankText(r)}${r.estimated && r.tier == null ? "、参加者の平均で仮置き" : ""}）`,
+    `・ランク由来: ${r.base}（${baseDetail(r)}）`,
     `・直近の成績による補正: ${r.adj >= 0 ? "+" : ""}${r.adj}（取り込み済みの直近 ${r.samples} 試合。各試合の10人の平均 ACS と比べた値）`,
     `・よく使うロール: ${r.role ? ROLE_LABEL[r.role] : "不明（取り込み済みの試合がまだ無い）"}`,
   ].join("\n");

@@ -497,6 +497,13 @@ const saveTeam = () => {
 };
 const teamRank = (p) =>
   p.guest ? tierName(p.tier) : p.tier == null ? "ランクなし（仮）" : p.estimated ? `${tierName(p.tier)}（過去）` : `${tierName(p.tier)} ${p.rr ?? 0}RR`;
+/** レートの内訳（数字にカーソルを合わせたときに出す）。 */
+function ratingDetail(p) {
+  const base = p.current == null
+    ? (p.proven != null ? `現在ランクなし・過去の実績 ${p.proven} から算出` : "ランクの記録なし・仮の値")
+    : p.proven != null && p.proven > p.current ? `現在 ${p.current} を過去の実績 ${p.proven} の側へ寄せた値` : `現在 ${p.current}`;
+  return `ランク由来 ${p.base}（${base}） ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合）`;
+}
 const teamSize = () => team.selected.size + team.guests.length;
 const pickMap = (except) => {
   const pool = team.maps.length > 1 ? team.maps.filter((m) => m !== except) : team.maps;
@@ -559,7 +566,7 @@ function renderTeams() {
             <td><input type="checkbox" ${team.selected.has(p.id) ? "checked" : ""} aria-label="${esc(p.name)} を選ぶ"></td>
             <td class="l">${esc(p.name)}<span class="muted">#${esc(p.tag)}</span></td>
             <td class="l">${esc(teamRank(p))}</td><td class="l">${esc(ROLES[p.role] ?? "不明")}</td>
-            <td title="ランク ${p.base} ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合）">${p.rating}</td>
+            <td title="${esc(ratingDetail(p))}">${p.rating}</td>
             <td><a class="plink muted" href="${esc(findHref(p.name, p.tag))}">戦績</a>
               ${p.removable ? `<button type="button" class="btn small" data-act="remove">削除</button>` : ""}</td></tr>`).join("")}
           </tbody></table></div>` : `<div class="empty">まだ誰も登録されていません。上の欄に Riot ID を入れて追加してください</div>`}
@@ -580,7 +587,7 @@ function renderTeams() {
         <h2><span>チーム分け</span>
           <button type="button" class="btn primary" data-act="split"${n < 2 || n > 10 ? " disabled" : ""}>チーム分けする</button></h2>
         <div id="team-result">${teamResultHtml()}</div>
-        <p class="muted" style="font-size:12px;margin:14px 0 0">レート = ランク（100RRで1段階）＋ 直近の成績による補正（最大±150）。レートの数字にカーソルを合わせると内訳が出ます。追加した人の試合は順次取り込まれ、補正とロールに反映されます。</p>
+        <p class="muted" style="font-size:12px;margin:14px 0 0">レート = ランク（現在のランクと過去の実績から算出）＋ 直近の成績による補正（最大±150）。レートの数字にカーソルを合わせると内訳が出ます。追加した人の試合は順次取り込まれ、補正とロールに反映されます。</p>
       </div>
     </section>`;
 }

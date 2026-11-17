@@ -104,8 +104,15 @@ const DDL_V5 = [
      AND match_id IN (SELECT match_id FROM matches WHERE queue = 'custom5v5')`,
 ];
 
+const DDL_V6 = [
+  // アクトごとの到達ランクと生涯最高ランク（skill.ts の RankHistory を JSON で保存）
+  `ALTER TABLE discord_links ADD COLUMN history TEXT`,
+  // 既存の登録者にも履歴が入るよう、次の機会にランクを取り直させる
+  `UPDATE discord_links SET rank_updated_at = 0`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6];
 
 let ready: Promise<void> | null = null;
 

@@ -4,6 +4,7 @@ import { roleOf, type Role } from "./agents";
 import { perfAdjustment } from "./balance";
 import type { Env } from "./db";
 import { Henrik, HenrikError } from "./henrik";
+import { actIndex, blendBase, gamesThisAct, provenLevel, summarizeMmr, UNRANKED_PENALTY, type RankHistory } from "./skill";
 
 const RANK_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 const PERF_WINDOW_MS = 120 * 24 * 60 * 60 * 1000;
@@ -22,6 +23,8 @@ export interface Link {
   rr: number | null;
   elo: number | null;
   rank_updated_at: number;
+  /** アクトごとの到達ランクなど（RankHistory の JSON）。未取得なら null */
+  history?: string | null;
 }
 
 export interface Rated {
@@ -31,14 +34,27 @@ export interface Rated {
   tag: string;
   tier: number | null;
   rr: number | null;
-  /** ランク由来の土台。ランクが無い場合は推定値で、estimated が true */
+  /** ランク由来の土台: 現在ランクを、過去の実績の側へ寄せた値。現在ランクが無い場合は estimated が true */
   base: number;
   estimated: boolean;
+  /** 現在ランクの数値（ランクなしは null）と、過去の実績から見た水準（履歴が無ければ null） */
+  current: number | null;
+  proven: number | null;
   /** 直近の成績による補正 */
   adj: number;
   rating: number;
   role: Role | null;
   samples: number;
+}
+
+function parseHistory(json: string | null | undefined): RankHistory | null {
+  if (!json) return null;
+  try {
+    const h = JSON.parse(json);
+    return Array.isArray(h?.acts) ? h : null;
+  } catch {
+    return null;
+  }
 }
 
 export const isStale = (l: Link, now = Date.now()) => now - (l.rank_updated_at ?? 0) > RANK_MAX_AGE_MS;
@@ -57,10 +73,11 @@ export async function refreshRanks(env: Env, api: Henrik, links: Link[]): Promis
         l.name = d?.account?.name ?? l.name;
         l.tag = d?.account?.tag ?? l.tag;
         l.rank_updated_at = now;
+        l.history = JSON.stringify(summarizeMmr(d));
         await env.DB.prepare(
-          `UPDATE discord_links SET tier = ?, rr = ?, elo = ?, name = ?, tag = ?, rank_updated_at = ? WHERE user_id = ?`,
+          `UPDATE discord_links SET tier = ?, rr = ?, elo = ?, name = ?, tag = ?, rank_updated_at = ?, history = ? WHERE user_id = ?`,
         )
-          .bind(l.tier, l.rr, l.elo, l.name, l.tag, now, l.user_id)
+          .bind(l.tier, l.rr, l.elo, l.name, l.tag, now, l.history, l.user_id)
           .run();
       } catch (e) {
         if (!(e instanceof HenrikError)) throw e;
@@ -99,16 +116,28 @@ export async function ratePlayers(env: Env, links: Link[]): Promise<Rated[]> {
     perf.set(r.puuid, p);
   }
 
-  const partial = links.map((l) => {
+  // 「今のアクト」は、取り込み済みの最新の試合と、参加者の履歴に出てくる一番新しいアクトから決める
+  const latest = await env.DB.prepare(`SELECT season FROM matches WHERE season != '' ORDER BY started_at DESC LIMIT 1`).first<{ season: string }>();
+  const histories = links.map((l) => parseHistory(l.history));
+  const nowIndex = Math.max(
+    actIndex(latest?.season) ?? 0,
+    ...histories.flatMap((h) => (h ? h.acts.map((a) => actIndex(a.s) ?? 0) : [])),
+  );
+
+  const partial = links.map((l, n) => {
     const p = perf.get(l.puuid);
     const samples = p?.ratios.length ?? 0;
     const ratio = samples ? p!.ratios.reduce((a, b) => a + b, 0) / samples : null;
     const role = p && p.roles.size ? [...p.roles.entries()].sort((a, b) => b[1] - a[1])[0][0] : null;
     const ranked = l.elo != null && (l.tier ?? 0) >= 3;
-    // 現在ランクなしの人は、最後に試合で確認できたランクの中央（50RR）を土台にする
-    const base = ranked ? l.elo! : p?.lastTier ? (p.lastTier - 3) * 100 + 50 : null;
-    return { l, base, ranked, adj: perfAdjustment(ratio, samples), role, samples, lastTier: p?.lastTier ?? null };
+    const current = ranked ? l.elo! : null;
+    const h = histories[n];
+    // 履歴が無い人（未取得など）は、試合で最後に確認できたランクの中央（50RR）を実績の代わりにする
+    const proven = provenLevel(h, nowIndex) ?? (!ranked && p?.lastTier ? (p.lastTier - 3) * 100 + 50 + UNRANKED_PENALTY : null);
+    const base = blendBase(current, proven, gamesThisAct(h, nowIndex));
+    return { l, base, ranked, current, proven, adj: perfAdjustment(ratio, samples), role, samples, lastTier: p?.lastTier ?? null };
   });
+  // ランクも履歴も無い人は、他の参加者の平均を仮の土台にする
   const known = partial.filter((x) => x.base != null).map((x) => x.base!);
   const fallback = known.length ? Math.round(known.reduce((a, b) => a + b, 0) / known.length) : DEFAULT_RATING;
 
@@ -119,10 +148,13 @@ export async function ratePlayers(env: Env, links: Link[]): Promise<Rated[]> {
       puuid: x.l.puuid,
       name: x.l.name,
       tag: x.l.tag,
-      tier: x.ranked ? x.l.tier : x.lastTier,
+      // ランクなしの人は、過去の実績に当たるランクを「（過去）」付きで表示する
+      tier: x.ranked ? x.l.tier : (x.lastTier ?? (x.proven != null ? Math.min(27, Math.max(3, Math.floor(x.proven / 100) + 3)) : null)),
       rr: x.ranked ? x.l.rr : null,
       base,
       estimated: !x.ranked,
+      current: x.current,
+      proven: x.proven,
       adj: x.adj,
       rating: base + x.adj,
       role: x.role,
