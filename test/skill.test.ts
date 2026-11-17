@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actIndex, blendBase, gamesThisAct, provenLevel, summarizeMmr, type RankHistory } from "../src/skill";
+import { actIndex, blendBase, gamesThisAct, newcomerBase, provenLevel, summarizeMmr, type RankHistory } from "../src/skill";
 
 const NOW = actIndex("e11a6")!;
 const act = (s: string, g: number, e: number) => ({ s, g, e });
@@ -74,5 +74,14 @@ describe("summarizeMmr", () => {
       { s: "e11a6", g: 26, e: 1617 },
     ]);
     expect(gamesThisAct(h, NOW)).toBe(26);
+  });
+});
+
+describe("newcomerBase", () => {
+  it("ランクの記録がない人は、アカウントレベルが低いほど低く置く", () => {
+    expect(newcomerBase(5)).toBe(200); // コンペに参加できないレベル
+    expect(newcomerBase(23)).toBe(265);
+    expect(newcomerBase(100)).toBe(650);
+    expect(newcomerBase(300)).toBe(900); // どれだけ高くても、ランクなしならゴールド1相当まで
   });
 });

@@ -1,14 +1,16 @@
 // チーム分け用のレート算出。ランク（elo）を土台に、直近の成績で補正する。
 
 import { roleOf, type Role } from "./agents";
-import { perfAdjustment } from "./balance";
+import { perfAdjustment, type PerfSample } from "./balance";
 import type { Env } from "./db";
 import { Henrik, HenrikError } from "./henrik";
-import { actIndex, blendBase, gamesThisAct, provenLevel, summarizeMmr, UNRANKED_PENALTY, type RankHistory } from "./skill";
+import { actIndex, blendBase, gamesThisAct, newcomerBase, provenLevel, summarizeMmr, UNRANKED_PENALTY, type RankHistory } from "./skill";
 
 const RANK_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 const PERF_WINDOW_MS = 120 * 24 * 60 * 60 * 1000;
 const PERF_MATCHES = 20;
+/** 相手のランク帯と比べるのに必要な、その試合でランクが分かっている人数。 */
+const MIN_RANKED_IN_LOBBY = 8;
 /** ランクも過去の試合も無い人だけの集まりだった場合の仮レート（ゴールド1相当）。 */
 const DEFAULT_RATING = 900;
 
@@ -25,7 +27,11 @@ export interface Link {
   rank_updated_at: number;
   /** アクトごとの到達ランクなど（RankHistory の JSON）。未取得なら null */
   history?: string | null;
+  account_level?: number | null;
 }
+
+/** 土台をどの情報から決めたか。 */
+export type Basis = "rank" | "history" | "level" | "average";
 
 export interface Rated {
   userId: string;
@@ -40,6 +46,9 @@ export interface Rated {
   /** 現在ランクの数値（ランクなしは null）と、過去の実績から見た水準（履歴が無ければ null） */
   current: number | null;
   proven: number | null;
+  /** rank: 現在ランク / history: 過去の実績（現在ランクなし）/ level: アカウントレベル（ランクの記録なし）/ average: 参加者の平均（手がかりなし） */
+  basis: Basis;
+  level: number | null;
   /** 直近の成績による補正 */
   adj: number;
   rating: number;
@@ -74,10 +83,14 @@ export async function refreshRanks(env: Env, api: Henrik, links: Link[]): Promis
         l.tag = d?.account?.tag ?? l.tag;
         l.rank_updated_at = now;
         l.history = JSON.stringify(summarizeMmr(d));
+        if (l.account_level == null) {
+          // レベルは初回だけ取得する（ランクの記録がない人の初心者判定に使う）。取れなくても先へ進む
+          l.account_level = await api.accountByPuuid(l.puuid).then((a) => a?.data?.account_level ?? null, () => null);
+        }
         await env.DB.prepare(
-          `UPDATE discord_links SET tier = ?, rr = ?, elo = ?, name = ?, tag = ?, rank_updated_at = ?, history = ? WHERE user_id = ?`,
+          `UPDATE discord_links SET tier = ?, rr = ?, elo = ?, name = ?, tag = ?, rank_updated_at = ?, history = ?, account_level = ? WHERE user_id = ?`,
         )
-          .bind(l.tier, l.rr, l.elo, l.name, l.tag, now, l.history, l.user_id)
+          .bind(l.tier, l.rr, l.elo, l.name, l.tag, now, l.history, l.account_level ?? null, l.user_id)
           .run();
       } catch (e) {
         if (!(e instanceof HenrikError)) throw e;
@@ -99,18 +112,24 @@ export async function ratePlayers(env: Env, links: Link[]): Promise<Rated[]> {
          AND pm.queue IN ('competitive', 'unrated', 'premier') AND pm.round_based = 1 AND pm.rounds > 0
          AND pm.started_at > ?2
      )
-     SELECT r.puuid, r.agent, r.tier, r.acs,
-            (SELECT AVG(o.score * 1.0 / o.rounds) FROM player_matches o WHERE o.match_id = r.match_id AND o.rounds > 0) AS lobby_acs
-     FROM recent r WHERE r.rn <= ?3 ORDER BY r.puuid, r.rn`,
+     SELECT r.puuid, r.agent, r.tier, r.acs, l.lobby_acs, l.lobby_elo, l.ranked
+     FROM recent r JOIN (
+       SELECT o.match_id, AVG(o.score * 1.0 / o.rounds) AS lobby_acs,
+              AVG(CASE WHEN o.tier >= 3 THEN (o.tier - 3) * 100 + 50 END) AS lobby_elo, SUM(o.tier >= 3) AS ranked
+       FROM player_matches o WHERE o.rounds > 0 AND o.match_id IN (SELECT match_id FROM recent WHERE rn <= ?3)
+       GROUP BY o.match_id
+     ) l ON l.match_id = r.match_id
+     WHERE r.rn <= ?3 ORDER BY r.puuid, r.rn`,
   )
     .bind(JSON.stringify(links.map((l) => l.puuid)), Date.now() - PERF_WINDOW_MS, PERF_MATCHES)
-    .all<{ puuid: string; agent: string | null; tier: number | null; acs: number; lobby_acs: number | null }>();
+    .all<{ puuid: string; agent: string | null; tier: number | null; acs: number; lobby_acs: number | null; lobby_elo: number | null; ranked: number }>();
 
-  const perf = new Map<string, { ratios: number[]; roles: Map<Role, number>; lastTier: number | null }>();
+  const perf = new Map<string, { samples: PerfSample[]; roles: Map<Role, number>; lastTier: number | null }>();
   for (const r of results) {
-    const p = perf.get(r.puuid) ?? { ratios: [] as number[], roles: new Map<Role, number>(), lastTier: null as number | null };
-    if (r.lobby_acs) p.ratios.push(r.acs / r.lobby_acs);
+    const p = perf.get(r.puuid) ?? { samples: [] as PerfSample[], roles: new Map<Role, number>(), lastTier: null as number | null };
     const role = roleOf(r.agent);
+    // 参加者の大半にランクがある試合だけ、相手のランク帯と比べる（アンレートなどは「同格相手」とみなす）
+    if (r.lobby_acs) p.samples.push({ ratio: r.acs / r.lobby_acs, role, lobbyElo: r.ranked >= MIN_RANKED_IN_LOBBY ? r.lobby_elo : null });
     if (role) p.roles.set(role, (p.roles.get(role) ?? 0) + 1);
     if (p.lastTier == null && r.tier && r.tier >= 3) p.lastTier = r.tier;
     perf.set(r.puuid, p);
@@ -126,23 +145,28 @@ export async function ratePlayers(env: Env, links: Link[]): Promise<Rated[]> {
 
   const partial = links.map((l, n) => {
     const p = perf.get(l.puuid);
-    const samples = p?.ratios.length ?? 0;
-    const ratio = samples ? p!.ratios.reduce((a, b) => a + b, 0) / samples : null;
     const role = p && p.roles.size ? [...p.roles.entries()].sort((a, b) => b[1] - a[1])[0][0] : null;
     const ranked = l.elo != null && (l.tier ?? 0) >= 3;
     const current = ranked ? l.elo! : null;
     const h = histories[n];
     // 履歴が無い人（未取得など）は、試合で最後に確認できたランクの中央（50RR）を実績の代わりにする
     const proven = provenLevel(h, nowIndex) ?? (!ranked && p?.lastTier ? (p.lastTier - 3) * 100 + 50 + UNRANKED_PENALTY : null);
-    const base = blendBase(current, proven, gamesThisAct(h, nowIndex));
-    return { l, base, ranked, current, proven, adj: perfAdjustment(ratio, samples), role, samples, lastTier: p?.lastTier ?? null };
+    let base = blendBase(current, proven, gamesThisAct(h, nowIndex));
+    let basis: Basis = ranked ? "rank" : "history";
+    if (base == null && l.account_level != null) {
+      // ランクの記録が一切ない: アカウントレベルから、初心者か経験者かを見分ける
+      base = newcomerBase(l.account_level);
+      basis = "level";
+    }
+    return { l, base, basis, ranked, current, proven, role, samples: p?.samples ?? [], lastTier: p?.lastTier ?? null };
   });
-  // ランクも履歴も無い人は、他の参加者の平均を仮の土台にする
+  // 手がかりが何も無い人だけ、他の参加者の平均を仮の土台にする
   const known = partial.filter((x) => x.base != null).map((x) => x.base!);
   const fallback = known.length ? Math.round(known.reduce((a, b) => a + b, 0) / known.length) : DEFAULT_RATING;
 
   return partial.map((x) => {
     const base = x.base ?? fallback;
+    const adj = perfAdjustment(x.samples, base);
     return {
       userId: x.l.user_id,
       puuid: x.l.puuid,
@@ -155,10 +179,12 @@ export async function ratePlayers(env: Env, links: Link[]): Promise<Rated[]> {
       estimated: !x.ranked,
       current: x.current,
       proven: x.proven,
-      adj: x.adj,
-      rating: base + x.adj,
+      basis: x.base == null ? "average" : x.basis,
+      level: x.l.account_level ?? null,
+      adj,
+      rating: base + adj,
       role: x.role,
-      samples: x.samples,
+      samples: x.samples.length,
     };
   });
 }

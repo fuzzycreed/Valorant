@@ -129,10 +129,12 @@ async function editOriginal(env: Env, i: any, data: object): Promise<void> {
 /** プレイヤー名に含まれる記号が Discord の装飾として解釈されないようにする。 */
 const md = (s: string) => s.replace(/([\\*_`~|>\[\]])/g, "\\$1");
 const rankText = (r: Rated) =>
-  r.tier == null ? "ランクなし（仮レート）" : r.estimated ? `${tierName(r.tier)}（過去）` : `${tierName(r.tier)} ${r.rr ?? 0}RR`;
+  r.tier == null ? (r.basis === "level" ? `ランクなし（Lv${r.level}）` : "ランクなし（仮レート）") : r.estimated ? `${tierName(r.tier)}（過去）` : `${tierName(r.tier)} ${r.rr ?? 0}RR`;
 /** ランク由来の土台の内訳。現在ランクと過去の実績のどちらがどう効いたかを示す。 */
 function baseDetail(r: Rated): string {
-  if (r.current == null) return r.proven != null ? `現在ランクなし。過去の実績 ${r.proven} から算出` : "ランクの記録なし。参加者の平均で仮置き";
+  if (r.basis === "level") return `ランクの記録なし。アカウントレベル ${r.level} から、${r.level! < 50 ? "始めたばかりの人" : "ランクを回していない経験者"}として算出`;
+  if (r.basis === "average") return "ランクもレベルも取得できず、参加者の平均で仮置き";
+  if (r.current == null) return `現在ランクなし。過去の実績 ${r.proven} から算出`;
   if (r.proven == null || r.proven <= r.current) return `現在 ${rankText(r)} = ${r.current}`;
   return `現在 ${rankText(r)} = ${r.current} を、過去の実績 ${r.proven} の側へ寄せた値`;
 }
@@ -186,13 +188,13 @@ function splitMessage(lobby: Lobby, rated: Rated[]) {
         description:
           (lobby.map ? `マップ: **${lobby.map}**\n` : "") +
           (atk.length === def.length
-            ? `平均レートの差: **${Math.round(s.diff)}**`
-            : `人数が違うので、合計レートが釣り合うように分けています（合計の差: **${Math.round(s.sumDiff)}**）`),
+            ? `戦力差（1人あたり）: **${Math.round(s.diff)}**`
+            : `人数が違うので、合計の戦力が釣り合うように分けています（合計の差: **${Math.round(s.sumDiff)}**）`),
         fields: [
           { name: `アタッカー側 ・ 平均 ${a.avg}`, value: a.value },
           { name: `ディフェンダー側 ・ 平均 ${d.avg}`, value: d.value },
         ],
-        footer: { text: "レート = ランク（現在と過去の実績から算出）＋ 直近の成績による補正（最大±150）。内訳は /rating" },
+        footer: { text: "戦力はレートを元に、参加者の平均から大きく離れた人ほど強く効くものとして計算。レートの内訳は /rating" },
       },
     ],
     components: [
@@ -253,7 +255,7 @@ async function ratingText(env: Env, userId: string): Promise<string> {
   return [
     `**${md(r.name)}#${md(r.tag)}** のレート: **${r.rating}**`,
     `・ランク由来: ${r.base}（${baseDetail(r)}）`,
-    `・直近の成績による補正: ${r.adj >= 0 ? "+" : ""}${r.adj}（取り込み済みの直近 ${r.samples} 試合。各試合の10人の平均 ACS と比べた値）`,
+    `・直近の成績による補正: ${r.adj >= 0 ? "+" : ""}${r.adj}（取り込み済みの直近 ${r.samples} 試合。ロールと対戦相手のランク帯から見込まれる成績との差）`,
     `・よく使うロール: ${r.role ? ROLE_LABEL[r.role] : "不明（取り込み済みの試合がまだ無い）"}`,
   ].join("\n");
 }

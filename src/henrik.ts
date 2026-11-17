@@ -63,6 +63,11 @@ export class Henrik {
     return this.json(`/v3/mmr/${region}/${platform}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`);
   }
 
+  /** puuid 指定のアカウント情報（アカウントレベルを含む）。 */
+  accountByPuuid(puuid: string) {
+    return this.json(`/v2/by-puuid/account/${puuid}`);
+  }
+
   /** puuid 指定のランク取得。Riot ID を変更した人でも引ける。 */
   mmrByPuuid(region: string, platform: string, puuid: string) {
     return this.json(`/v3/by-puuid/mmr/${region}/${platform}/${puuid}`);

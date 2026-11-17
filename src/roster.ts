@@ -34,14 +34,15 @@ export async function saveLink(env: Env, api: Henrik, userId: string, account: a
   const link: Link = {
     user_id: userId, puuid: account.puuid, name: account.name, tag: account.tag,
     region: account.region ?? env.REGION, platform: env.PLATFORM, tier: null, rr: null, elo: null, rank_updated_at: 0,
+    account_level: account.account_level ?? null,
   };
   await env.DB.prepare(
-    `INSERT INTO discord_links (user_id, puuid, name, tag, region, platform, linked_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO discord_links (user_id, puuid, name, tag, region, platform, linked_at, account_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (user_id) DO UPDATE SET puuid = excluded.puuid, name = excluded.name, tag = excluded.tag,
-       region = excluded.region, platform = excluded.platform, tier = NULL, rr = NULL, elo = NULL,
-       rank_updated_at = 0, discovered_at = 0, linked_at = excluded.linked_at`,
+       region = excluded.region, platform = excluded.platform, tier = NULL, rr = NULL, elo = NULL, history = NULL,
+       rank_updated_at = 0, discovered_at = 0, linked_at = excluded.linked_at, account_level = excluded.account_level`,
   )
-    .bind(userId, link.puuid, link.name, link.tag, link.region, link.platform, Date.now())
+    .bind(userId, link.puuid, link.name, link.tag, link.region, link.platform, Date.now(), link.account_level ?? null)
     .run();
   await refreshRanks(env, api, [link]);
   let queued = 0;

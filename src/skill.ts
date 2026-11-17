@@ -37,6 +37,15 @@ export const UNRANKED_PENALTY = 50;
 const tierElo = (tier: number, rr = 0) => (tier - 3) * 100 + rr;
 
 /**
+ * ランクの記録が一切ない人の土台を、アカウントレベルから決める。
+ * レベルが低ければ本当の初心者（レベル20未満はコンペに参加できない）、高ければランクを回さないだけの経験者とみなす。
+ * 過去にランクがあった人（引退・休止中）はここを通らず、過去の実績から計算される。
+ */
+export function newcomerBase(level: number): number {
+  return Math.round(Math.min(900, Math.max(200, 150 + level * 5)));
+}
+
+/**
  * アクトの通し番号（1アクト ≒ 2か月）。エピソード9までは1エピソード3アクト、
  * エピソード10以降は1年6アクト。
  */

@@ -111,8 +111,14 @@ const DDL_V6 = [
   `UPDATE discord_links SET rank_updated_at = 0`,
 ];
 
+const DDL_V7 = [
+  // ランクの記録がない人が、本当の初心者か経験者かを見分けるために使う
+  `ALTER TABLE discord_links ADD COLUMN account_level INTEGER`,
+  `UPDATE discord_links SET rank_updated_at = 0`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7];
 
 let ready: Promise<void> | null = null;
 

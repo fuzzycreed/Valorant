@@ -496,13 +496,14 @@ const saveTeam = () => {
   try { localStorage.setItem("team", JSON.stringify({ selected: [...team.selected], guests: team.guests })); } catch {}
 };
 const teamRank = (p) =>
-  p.guest ? tierName(p.tier) : p.tier == null ? "ランクなし（仮）" : p.estimated ? `${tierName(p.tier)}（過去）` : `${tierName(p.tier)} ${p.rr ?? 0}RR`;
+  p.guest ? tierName(p.tier) : p.tier == null ? (p.basis === "level" ? `ランクなし（Lv${p.level}）` : "ランクなし（仮）") : p.estimated ? `${tierName(p.tier)}（過去）` : `${tierName(p.tier)} ${p.rr ?? 0}RR`;
 /** レートの内訳（数字にカーソルを合わせたときに出す）。 */
 function ratingDetail(p) {
-  const base = p.current == null
-    ? (p.proven != null ? `現在ランクなし・過去の実績 ${p.proven} から算出` : "ランクの記録なし・仮の値")
+  const base = p.basis === "level" ? `ランクの記録なし・アカウントレベル ${p.level} から算出`
+    : p.basis === "average" ? "ランクもレベルも不明・参加者の平均で仮置き"
+    : p.current == null ? `現在ランクなし・過去の実績 ${p.proven} から算出`
     : p.proven != null && p.proven > p.current ? `現在 ${p.current} を過去の実績 ${p.proven} の側へ寄せた値` : `現在 ${p.current}`;
-  return `ランク由来 ${p.base}（${base}） ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合）`;
+  return `ランク由来 ${p.base}（${base}） ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合。ロールと相手のランク帯から見込まれる成績との差）`;
 }
 const teamSize = () => team.selected.size + team.guests.length;
 const pickMap = (except) => {
@@ -525,8 +526,8 @@ function teamResultHtml() {
   };
   return `
     <p class="summary">${team.map ? `マップ: <b>${esc(team.map)}</b> ・ ` : ""}${atk.length === def.length
-      ? `平均レートの差 <b>${o.diff}</b>`
-      : `人数が違うので合計レートで釣り合わせています（合計の差 <b>${o.sumDiff}</b>）`}
+      ? `戦力差（1人あたり） <b>${o.diff}</b>`
+      : `人数が違うので合計の戦力で釣り合わせています（合計の差 <b>${o.sumDiff}</b>）`}
       <span class="muted">（案 ${(team.variant % r.options.length) + 1}/${r.options.length}）</span></p>
     ${block("アタッカー側", atk)}${block("ディフェンダー側", def)}
     <div class="actions">
@@ -587,7 +588,7 @@ function renderTeams() {
         <h2><span>チーム分け</span>
           <button type="button" class="btn primary" data-act="split"${n < 2 || n > 10 ? " disabled" : ""}>チーム分けする</button></h2>
         <div id="team-result">${teamResultHtml()}</div>
-        <p class="muted" style="font-size:12px;margin:14px 0 0">レート = ランク（現在のランクと過去の実績から算出）＋ 直近の成績による補正（最大±150）。レートの数字にカーソルを合わせると内訳が出ます。追加した人の試合は順次取り込まれ、補正とロールに反映されます。</p>
+        <p class="muted" style="font-size:12px;margin:14px 0 0">レート = ランク（現在のランクと過去の実績から算出）＋ 直近の成績による補正（最大±300）。戦力差は、参加者の平均から大きく離れた人ほど強く効くものとして計算します。レートの数字にカーソルを合わせると内訳が出ます。追加した人の試合は順次取り込まれ、補正とロールに反映されます。</p>
       </div>
     </section>`;
 }
