@@ -16,7 +16,7 @@ export interface Env {
 }
 
 /** player_matches の列。順序は INSERT とスキーマの両方で使う。 */
-export const PM_NUM_COLS = [
+const PM_NUM_COLS_V1 = [
   "tier", "score", "kills", "deaths", "assists", "headshots", "bodyshots", "legshots",
   "damage_dealt", "damage_received", "rounds", "rounds_won", "rounds_lost", "won",
   "fk", "fd", "fk_wins", "fd_wins", "mk2", "mk3", "mk4", "mk5", "kast_rounds",
@@ -24,6 +24,8 @@ export const PM_NUM_COLS = [
   "atk_rounds", "atk_wins", "def_rounds", "def_wins", "atk_kills", "atk_deaths", "def_kills", "def_deaths",
   "plants", "defuses", "pistol_rounds", "pistol_wins", "loadout_total",
 ] as const;
+/** 現在の列。V1 以降に追加した列は、テーブル作成（DDL_V1）ではなく後続のスキーマ変更で足す。 */
+export const PM_NUM_COLS = [...PM_NUM_COLS_V1, "dmg_rounds"] as const;
 const PM_TEXT_COLS = ["name", "tag", "team", "party_id", "agent", "agent_id", "tier_name", "clutches", "weapons"] as const;
 
 const DDL_V1 = [
@@ -45,7 +47,7 @@ const DDL_V1 = [
      match_id TEXT NOT NULL, puuid TEXT NOT NULL,
      started_at INTEGER, queue TEXT, mode_type TEXT, map TEXT, season TEXT, round_based INTEGER,
      ${PM_TEXT_COLS.map((c) => `${c} TEXT`).join(", ")},
-     ${PM_NUM_COLS.map((c) => `${c} INTEGER`).join(", ")},
+     ${PM_NUM_COLS_V1.map((c) => `${c} INTEGER`).join(", ")},
      PRIMARY KEY (match_id, puuid))`,
   `CREATE INDEX IF NOT EXISTS pm_puuid_started ON player_matches (puuid, started_at)`,
   `CREATE INDEX IF NOT EXISTS pm_party ON player_matches (match_id, party_id)`,
@@ -82,8 +84,19 @@ const DDL_V3 = [
   `CREATE INDEX IF NOT EXISTS match_queue_puuid ON match_queue (puuid, status)`,
 ];
 
+const DDL_V4 = [
+  // ADR の分母。ダメージが記録されていない試合（カスタムなど）は 0 にして、ADR の計算から外す
+  `ALTER TABLE player_matches ADD COLUMN dmg_rounds INTEGER`,
+  `UPDATE player_matches SET dmg_rounds = CASE WHEN match_id IN (
+     SELECT match_id FROM player_matches GROUP BY match_id
+     HAVING SUM(damage_dealt) > 0 OR SUM(headshots + bodyshots + legshots) > 0) THEN rounds ELSE 0 END`,
+  // カスタムゲームのキューIDは空文字で保存されていた。絞り込みで選べるよう "custom" に揃える
+  `UPDATE matches SET queue = 'custom' WHERE queue = ''`,
+  `UPDATE player_matches SET queue = 'custom' WHERE queue = ''`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4];
 
 let ready: Promise<void> | null = null;
 

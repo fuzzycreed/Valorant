@@ -6,7 +6,7 @@ import { allowLookup, findAccount } from "./roster";
 const MAX_LOOKUP_PLAYERS = 300;
 
 const SUM_COLS = [
-  "rounds", "rounds_won", "rounds_lost", "score", "kills", "deaths", "assists",
+  "rounds", "dmg_rounds", "rounds_won", "rounds_lost", "score", "kills", "deaths", "assists",
   "headshots", "bodyshots", "legshots", "damage_dealt", "damage_received",
   "fk", "fd", "fk_wins", "fd_wins", "mk2", "mk3", "mk4", "mk5", "kast_rounds",
   "trade_kills", "traded_deaths", "clutch_attempts", "clutch_wins",
@@ -33,7 +33,9 @@ function filterCte(q: URLSearchParams, alias = "") {
   const where = [`${a}puuid = ?`];
   const params: unknown[] = [q.get("puuid") ?? ""];
   const queue = q.get("queue") ?? "competitive";
-  if (queue === "all") where.push(`${a}round_based = 1`);
+  // 「すべて」はマッチメイクのラウンド制モードの合算。カスタムは相手や人数が毎回違い、
+  // ダメージも記録されないので、明示的に選んだときだけ表示する
+  if (queue === "all") where.push(`${a}round_based = 1 AND ${a}queue != 'custom'`);
   else {
     where.push(`${a}queue = ?`);
     params.push(queue);
@@ -184,7 +186,7 @@ async function matches(env: Env, q: URLSearchParams) {
     `${c.sql}
      SELECT f.match_id, f.started_at, f.queue, f.map, f.season, f.round_based, f.team, f.agent, f.agent_id, f.tier, f.tier_name,
             f.won, f.rounds, f.rounds_won, f.rounds_lost, f.score, f.kills, f.deaths, f.assists,
-            f.headshots, f.bodyshots, f.legshots, f.damage_dealt, f.fk, f.fd, f.kast_rounds,
+            f.headshots, f.bodyshots, f.legshots, f.damage_dealt, f.dmg_rounds, f.fk, f.fd, f.kast_rounds,
             f.mk3, f.mk4, f.mk5, f.clutch_wins, m.game_length_ms, h.rr_change, h.rr, h.tier_name AS rank_after
      FROM f JOIN matches m ON m.match_id = f.match_id
      LEFT JOIN mmr_history h ON h.match_id = f.match_id AND h.puuid = f.puuid

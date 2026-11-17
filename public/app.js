@@ -25,7 +25,7 @@ const state = {
 
 const QUEUES = {
   competitive: "コンペティティブ", unrated: "アンレート", swiftplay: "スイフトプレイ", spikerush: "スパイクラッシュ",
-  deathmatch: "デスマッチ", hurm: "チームデスマッチ", ggteam: "エスカレーション", premier: "Premier", "": "その他",
+  deathmatch: "デスマッチ", hurm: "チームデスマッチ", ggteam: "エスカレーション", premier: "Premier", custom: "カスタム",
 };
 const TIER_GROUPS = ["アイアン", "ブロンズ", "シルバー", "ゴールド", "プラチナ", "ダイヤ", "アセンダント", "イモータル"];
 function tierName(id) {
@@ -77,7 +77,8 @@ function derive(t) {
     winrate: div(t.wins, t.wins + t.losses),
     kd: div(t.kills, t.deaths),
     acs: div(t.score, t.rounds),
-    adr: div(t.damage_dealt, t.rounds),
+    // ダメージが記録されている試合のラウンドだけで割る（カスタムなどは記録が無い）
+    adr: div(t.damage_dealt, t.dmg_rounds),
     hs: div(t.headshots, shots),
     body: div(t.bodyshots, shots),
     leg: div(t.legshots, shots),
@@ -195,7 +196,7 @@ function renderFilters(options) {
   const form = $("#filters");
   form.hidden = false;
   form.innerHTML =
-    sel("queue", "モード", [...queues, ["all", "すべて（ラウンド制のみ）"]]) +
+    sel("queue", "モード", [...queues, ["all", "すべて（カスタムを除く）"]]) +
     sel("season", "アクト", [["", "すべて"], ...opts("season").map((o) => [o.value, seasonLabel(o.value)])]) +
     sel("agent", "エージェント", [["", "すべて"], ...opts("agent").map((o) => [o.value, o.value]).sort((a, b) => a[1].localeCompare(b[1]))]) +
     sel("map", "マップ", [["", "すべて"], ...opts("map").map((o) => [o.value, o.value]).sort((a, b) => a[1].localeCompare(b[1]))]) +
@@ -212,7 +213,7 @@ const METRICS = {
   hs: { label: "HS%", get: (m) => div(m.headshots, m.headshots + m.bodyshots + m.legshots), fmt: (v) => pct(v, 0), tot: (d) => d.hs },
   acs: { label: "ACS", get: (m) => div(m.score, m.rounds), fmt: (v) => num(v), tot: (d) => d.acs },
   kd: { label: "K/D", get: (m) => div(m.kills, Math.max(1, m.deaths)), fmt: (v) => num(v, 2), tot: (d) => d.kd },
-  adr: { label: "ADR", get: (m) => div(m.damage_dealt, m.rounds), fmt: (v) => num(v), tot: (d) => d.adr },
+  adr: { label: "ADR", get: (m) => div(m.damage_dealt, m.dmg_rounds), fmt: (v) => num(v), tot: (d) => d.adr },
   kast: { label: "KAST", get: (m) => div(m.kast_rounds, m.rounds), fmt: (v) => pct(v, 0), tot: (d) => d.kast },
 };
 
@@ -252,7 +253,7 @@ async function viewOverview() {
       ${tile("勝率", pct(d.winrate), `${t.wins}勝 ${t.losses}敗${t.draws ? ` ${t.draws}分` : ""}（${t.games}試合）`)}
       ${tile("K/D", num(d.kd, 2), `${t.kills} / ${t.deaths} / ${t.assists}`)}
       ${tile("ACS", rbOnly(num(d.acs)), "1ラウンドあたりの戦闘スコア")}
-      ${tile("ADR", rbOnly(num(d.adr)), "1ラウンドあたりのダメージ")}
+      ${tile("ADR", rbOnly(num(d.adr)), !rb ? "" : !t.dmg_rounds ? "このモードはダメージの記録なし" : t.dmg_rounds < t.rounds ? "ダメージの記録がない試合を除いて計算" : "1ラウンドあたりのダメージ")}
       ${tile("HS%", shots ? pct(d.hs) : "—", shots ? `命中 ${shots} 発のうち頭 ${t.headshots} 発` : "このモードは命中部位の記録なし")}
       ${tile("KAST", rbOnly(pct(d.kast, 0)), "キル・アシスト・生存・トレードのいずれかがあったラウンド")}
       ${tile("FB（先制キル）", rbOnly(String(t.fk)), rb ? `1試合 ${num(t.fk / t.games, 1)} 回 ・ 取った時のラウンド勝率 ${pct(div(t.fk_wins, t.fk), 0)}` : "")}
@@ -411,7 +412,7 @@ async function viewMatch(id) {
           <td>${agentCell(p.name, p.agent_id, p.tag)}</td>
           <td class="l">${esc(tierName(p.tier))}</td><td>${rb ? num(div(p.score, p.rounds)) : "—"}</td>
           <td>${p.kills} / ${p.deaths} / ${p.assists}</td><td>${esc(signed(p.kills - p.deaths))}</td>
-          <td>${rb ? num(div(p.damage_dealt, p.rounds)) : "—"}</td><td>${shots ? pct(p.headshots / shots, 0) : "—"}</td>
+          <td>${rb ? num(div(p.damage_dealt, p.dmg_rounds)) : "—"}</td><td>${shots ? pct(p.headshots / shots, 0) : "—"}</td>
           <td>${rb ? pct(div(p.kast_rounds, p.rounds), 0) : "—"}</td><td>${rb ? p.fk : "—"}</td><td>${rb ? p.fd : "—"}</td>
           <td>${rb ? p.mk3 + p.mk4 + p.mk5 : "—"}</td><td>${rb ? p.clutch_wins : "—"}</td></tr>`;
       }).join("")}</tbody></table></div></div>`;

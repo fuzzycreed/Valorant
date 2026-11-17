@@ -97,3 +97,40 @@ describe("computeMatch", () => {
     expect(by(c, "r1").won).toBe(1);
   });
 });
+
+describe("カスタムゲーム", () => {
+  const custom = (players: any[]) =>
+    computeMatch({
+      metadata: {
+        match_id: "c1", started_at: "2026-01-01T00:00:00Z", game_length_in_ms: 1,
+        queue: { id: "", name: "Custom Game", mode_type: "Standard" }, map: { name: "Haven" }, season: { short: "e1a1" },
+      },
+      players,
+      teams: [
+        { team_id: "Red", won: true, rounds: { won: 2, lost: 0 } },
+        { team_id: "Blue", won: false, rounds: { won: 0, lost: 2 } },
+      ],
+      rounds: [R(0, "Red", "Attacker"), R(1, "Red", "Attacker")],
+      kills: [K(0, 1000, "r1", "b1")],
+    });
+  const noDamage = (puuid: string, team: string) => {
+    const p = P(puuid, team);
+    p.stats = { ...p.stats, headshots: 0, bodyshots: 0, legshots: 0, damage: { dealt: 0, received: 0 } };
+    return p;
+  };
+
+  it("キューIDが空文字の試合は custom として扱う", () => {
+    expect(custom([P("r1", "Red"), P("b1", "Blue")]).match.queue).toBe("custom");
+  });
+
+  it("ダメージが記録されていない試合は ADR の分母（dmg_rounds）を 0 にする", () => {
+    const c = custom([noDamage("r1", "Red"), noDamage("b1", "Blue")]);
+    expect(by(c, "r1")).toMatchObject({ rounds: 2, dmg_rounds: 0, damage_dealt: 0, fk: 1 });
+  });
+
+  it("ダメージが記録されている試合は全ラウンドを分母にする", () => {
+    const c = custom([P("r1", "Red"), noDamage("b1", "Blue")]);
+    expect(by(c, "r1").dmg_rounds).toBe(2);
+    expect(by(c, "b1").dmg_rounds).toBe(2);
+  });
+});

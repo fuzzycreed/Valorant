@@ -27,6 +27,8 @@ export interface PlayerMatchStats {
   damage_dealt: number;
   damage_received: number;
   rounds: number;
+  /** ADR の分母に使うラウンド数。API がダメージを記録していない試合（カスタムなど）では 0 */
+  dmg_rounds: number;
   rounds_won: number;
   rounds_lost: number;
   /** 1=勝ち 0=負け null=引き分け／判定なし */
@@ -151,6 +153,7 @@ function emptyStats(p: any, rounds: number): PlayerMatchStats {
     damage_dealt: s.damage?.dealt ?? 0,
     damage_received: s.damage?.received ?? 0,
     rounds,
+    dmg_rounds: 0,
     rounds_won: 0,
     rounds_lost: 0,
     won: null,
@@ -191,7 +194,8 @@ export function computeMatch(raw: any): ComputedMatch {
   const rawRounds: any[] = raw.rounds ?? [];
   const rawKills: any[] = raw.kills ?? [];
   const teams: any[] = raw.teams ?? [];
-  const queue: string = md.queue?.id ?? "unknown";
+  // カスタムゲームは API 上のキューIDが空文字になる。扱いやすいよう "custom" に揃える
+  const queue: string = md.queue?.id === "" ? "custom" : (md.queue?.id ?? "unknown");
 
   const twoTeams = teams.length === 2;
   const roundBased = twoTeams && rawRounds.length > 1 && !NON_ROUND_QUEUES.has(queue);
@@ -202,6 +206,13 @@ export function computeMatch(raw: any): ComputedMatch {
     stats.set(p.puuid, emptyStats(p, rawRounds.length));
     order.push(p.puuid);
   }
+  // カスタムなど一部の試合は、API がダメージと命中部位を全員 0 で返す。
+  // その試合を ADR の計算に含めると実際より低く出るので、分母から外せるように記録しておく。
+  const hasDamageData = rawPlayers.some((p) => {
+    const st = p.stats ?? {};
+    return (st.damage?.dealt ?? 0) > 0 || (st.headshots ?? 0) + (st.bodyshots ?? 0) + (st.legshots ?? 0) > 0;
+  });
+  if (hasDamageData) for (const st of stats.values()) st.dmg_rounds = st.rounds;
   const idx = new Map(order.map((id, i) => [id, i]));
   const teamOf = (puuid: string) => stats.get(puuid)?.team ?? "";
 
