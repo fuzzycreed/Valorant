@@ -90,6 +90,21 @@ export function rerollOptions(splits: Split[]): Split[] {
 
 /** 試合内の10人平均を 1.00 としたときの、ロールごとの平均 ACS（ランク差の影響を除いた値）。デュエリストは高く、イニシエーターは低く出る。 */
 export const ROLE_ACS: Record<Role, number> = { duelist: 1.05, initiator: 0.89, controller: 1.03, sentinel: 0.98 };
+/**
+ * 同じロールでも、エージェントによって ACS の出やすさが違う（例: デュエリストでもレイナ 1.11、ウェイレイ 0.98）。
+ * 30件以上のデータがあるエージェントだけ個別の値を持ち、それ以外はロールの平均を使う。
+ * 値はランク差の影響を除き、件数が少ないものほどロール平均へ寄せてある。
+ */
+export const AGENT_ACS: Record<string, number> = {
+  reyna: 1.11, iso: 1.1, phoenix: 1.09, jett: 1.06, raze: 1.04, yoru: 1.02, hush: 1.01, neon: 1.0, waylay: 0.98,
+  breach: 0.9, sova: 0.89, skye: 0.89, fade: 0.87,
+  clove: 1.07, astra: 1.0, miks: 0.99, omen: 0.98, brimstone: 0.98,
+  chamber: 1.04, vyse: 1.0, sage: 0.97, cypher: 0.94, killjoy: 0.94,
+};
+/** その試合で使ったエージェント（無ければロール）から見込まれる、平均的な ACS 比。 */
+export function acsBaseline(agent: string | null | undefined, role: Role | null): number {
+  return (agent && AGENT_ACS[agent.toLowerCase()]) || (role ? ROLE_ACS[role] : 1);
+}
 /** レート1点差あたりの、ロール補正後 ACS の変化（100点差で約 6.3%）。 */
 export const ACS_PER_POINT = 0.00063;
 /**
@@ -119,6 +134,8 @@ export function impact(gap: number): number {
 export interface PerfSample {
   ratio: number;
   role: Role | null;
+  /** 使ったエージェント。分かれば、ロールの平均ではなくエージェントごとの平均で均す */
+  agent?: string | null;
   /** その試合の参加者の平均ランク（点数）。分からなければ null */
   lobbyElo: number | null;
 }
@@ -128,7 +145,7 @@ export const PERF_CAP = 300;
 
 /**
  * 直近の成績からレート補正を求める。
- * 1試合ごとに「ロールで均した ACS」と「土台のレートの人が、その試合のランク帯で出すはずの ACS」を比べ、
+ * 1試合ごとに「エージェント（無ければロール）で均した ACS」と「土台のレートの人が、その試合のランク帯で出すはずの ACS」を比べ、
  * その差を点数に直して平均する。格下相手に稼いだぶんや、デュエリストを使って伸びたぶんは補正に入らない。
  */
 export function perfAdjustment(samples: PerfSample[], base: number): number {
@@ -136,7 +153,7 @@ export function perfAdjustment(samples: PerfSample[], base: number): number {
   if (!n) return 0;
   let sum = 0;
   for (const s of samples) {
-    const actual = s.ratio / (s.role ? ROLE_ACS[s.role] : 1);
+    const actual = s.ratio / acsBaseline(s.agent, s.role);
     const expected = Math.max(EXPECTED_FLOOR, 1 + ACS_PER_POINT * (s.lobbyElo == null ? 0 : impact(base - s.lobbyElo)));
     sum += actual - expected;
   }

@@ -73,6 +73,11 @@ export class Henrik {
     return this.json(`/v3/by-puuid/mmr/${region}/${platform}/${puuid}`);
   }
 
+  /** puuid 指定の、直近のコンペの RR 増減（最大20試合ほど）。 */
+  mmrHistoryByPuuid(region: string, platform: string, puuid: string) {
+    return this.json(`/v2/by-puuid/mmr-history/${region}/${platform}/${puuid}`);
+  }
+
   mmrHistory(region: string, platform: string, name: string, tag: string, stored = false) {
     const kind = stored ? "stored-mmr-history" : "mmr-history";
     const q = stored ? "?size=100" : "";

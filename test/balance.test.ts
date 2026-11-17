@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACS_PER_POINT, balance, EXPECTED_FLOOR, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
+import { acsBaseline, ACS_PER_POINT, AGENT_ACS, balance, EXPECTED_FLOOR, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
 
 const P = (id: string, rating: number, role: Candidate["role"] = null): Candidate => ({ id, rating, role });
 
@@ -89,6 +89,16 @@ describe("perfAdjustment", () => {
     const initiator = perfAdjustment(many({ ratio: 1, role: "initiator", lobbyElo: 1500 }, 20), 1500);
     expect(duelist).toBeLessThan(0);
     expect(initiator).toBeGreaterThan(0);
+  });
+  it("エージェントごとの平均が分かっていれば、ロールの平均より優先する", () => {
+    expect(acsBaseline("Reyna", "duelist")).toBe(AGENT_ACS.reyna);
+    expect(acsBaseline("KAY/O", "initiator")).toBe(ROLE_ACS.initiator); // データが少ないエージェントはロール平均
+    expect(acsBaseline(null, null)).toBe(1);
+    // 同じデュエリストで同じ ACS でも、稼ぎやすいレイナより、稼ぎにくいウェイレイのほうが高く評価される
+    const reyna = perfAdjustment(many({ ratio: 1.05, role: "duelist", agent: "Reyna", lobbyElo: 1500 }, 20), 1500);
+    const waylay = perfAdjustment(many({ ratio: 1.05, role: "duelist", agent: "Waylay", lobbyElo: 1500 }, 20), 1500);
+    expect(reyna).toBeLessThan(0);
+    expect(waylay).toBeGreaterThan(0);
   });
   it("格下相手に稼いだぶんは補正に入らない", () => {
     // 200点下のランク帯で、その差から見込まれるとおりの成績

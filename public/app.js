@@ -503,7 +503,9 @@ function ratingDetail(p) {
     : p.basis === "average" ? "ランクもレベルも不明・参加者の平均で仮置き"
     : p.current == null ? `現在ランクなし・過去の実績 ${p.proven} から算出`
     : p.proven != null && p.proven > p.current ? `現在 ${p.current} を過去の実績 ${p.proven} の側へ寄せた値` : `現在 ${p.current}`;
-  return `ランク由来 ${p.base}（${base}） ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合。ロールと相手のランク帯から見込まれる成績との差）`;
+  const sign = (n) => (n >= 0 ? "+" : "") + n;
+  const rr = p.trend ? ` ＋ RRの増減 ${sign(p.rrAdj)}（直近 ${p.trend.n} 試合。勝ち平均 +${p.trend.w} / 負け平均 ${p.trend.l}）` : "";
+  return `ランク由来 ${p.base}（${base}）${rr} ＋ 成績補正 ${sign(p.adj)}（直近 ${p.samples} 試合。エージェントと相手のランク帯から見込まれる成績との差）`;
 }
 const teamSize = () => team.selected.size + team.guests.length;
 const pickMap = (except) => {

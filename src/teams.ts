@@ -40,6 +40,8 @@ const view = (r: Rated, link: Link) => ({
   proven: r.proven,
   basis: r.basis,
   level: r.level,
+  rrAdj: r.rrAdj,
+  trend: r.trend,
   adj: r.adj,
   rating: r.rating,
   estimated: r.estimated,
@@ -133,7 +135,7 @@ async function split(req: Request, env: Env) {
     const rating = (tier - 3) * 100 + 50;
     return {
       id: `guest:${n}`, name: String(g?.name ?? "").trim().slice(0, 24) || `ゲスト${n + 1}`, tag: "",
-      tier, rr: null, base: rating, current: rating, proven: null, basis: "rank", level: null, adj: 0, rating, estimated: false, role, samples: 0, removable: false, guest: true,
+      tier, rr: null, base: rating, current: rating, proven: null, basis: "rank", level: null, rrAdj: 0, trend: null, adj: 0, rating, estimated: false, role, samples: 0, removable: false, guest: true,
     };
   });
 

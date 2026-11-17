@@ -255,7 +255,10 @@ async function ratingText(env: Env, userId: string): Promise<string> {
   return [
     `**${md(r.name)}#${md(r.tag)}** のレート: **${r.rating}**`,
     `・ランク由来: ${r.base}（${baseDetail(r)}）`,
-    `・直近の成績による補正: ${r.adj >= 0 ? "+" : ""}${r.adj}（取り込み済みの直近 ${r.samples} 試合。ロールと対戦相手のランク帯から見込まれる成績との差）`,
+    ...(r.trend
+      ? [`・RR の増減による補正: ${r.rrAdj >= 0 ? "+" : ""}${r.rrAdj}（直近 ${r.trend.n} 試合。勝ち平均 +${r.trend.w} / 負け平均 ${r.trend.l}）`]
+      : []),
+    `・直近の成績による補正: ${r.adj >= 0 ? "+" : ""}${r.adj}（取り込み済みの直近 ${r.samples} 試合。エージェントと対戦相手のランク帯から見込まれる成績との差）`,
     `・よく使うロール: ${r.role ? ROLE_LABEL[r.role] : "不明（取り込み済みの試合がまだ無い）"}`,
   ].join("\n");
 }

@@ -110,3 +110,48 @@ export function blendBase(current: number | null, proven: number | null, games: 
   const pull = PULL_MAX - (PULL_MAX - PULL_MIN) * t;
   return Math.round(current + (proven - current) * pull);
 }
+
+// ---------- RR の増減から見た「内部レートとランクのずれ」 ----------
+//
+// VALORANT は、内部レートがランクより高い人には勝ちで多く・負けで少なく RR を動かす。
+// 直近の「勝ちの平均」と「負けの平均」を足した値（差し引き）がプラスなら、実力はランクより上にある。
+// 実測（36人）: 差し引き +20 の人はランクより約350点上、-7 の人は約450点下の成績だった。
+
+/** 直近のコンペでの RR の動き。w は勝ち試合の平均、l は負け試合の平均（マイナス）、n は数えた試合数。 */
+export interface RrTrend {
+  w: number;
+  l: number;
+  n: number;
+}
+
+export const RR_WINDOW_MS = 120 * 24 * 60 * 60 * 1000;
+export const RR_MATCHES = 20;
+/** 勝ち・負けそれぞれ、これだけの試合が無ければ使わない。 */
+export const RR_MIN_EACH = 2;
+/** 差し引き 1 を、レート何点ぶんのずれとして扱うか。 */
+export const RR_POINTS = 15;
+/** 試合数が少ないうちは弱める。n 試合なら n / (n + この値) 倍。 */
+export const RR_SHRINK = 8;
+export const RR_CAP = 300;
+
+/** HenrikDev の mmr-history から、直近の RR の動きをまとめる。使えるだけの試合が無ければ null。 */
+export function summarizeRr(history: any[] | null | undefined, now: number): RrTrend | null {
+  const rows = (history ?? [])
+    .map((e) => ({ t: Date.parse(e?.date ?? ""), c: Number(e?.last_change), e }))
+    // 認定戦・放置ペナルティ・増減なしの試合は、内部レートの手がかりにならない
+    .filter(({ t, c, e }) => Number.isFinite(t) && Number.isFinite(c) && c !== 0 && now - t <= RR_WINDOW_MS
+      && (e.queue_id ?? "competitive") === "competitive" && !e.is_placement_match && !e.afk_penalty)
+    .sort((a, b) => b.t - a.t)
+    .slice(0, RR_MATCHES);
+  const wins = rows.filter((r) => r.c > 0), losses = rows.filter((r) => r.c < 0);
+  if (wins.length < RR_MIN_EACH || losses.length < RR_MIN_EACH) return null;
+  const mean = (v: { c: number }[]) => v.reduce((a, r) => a + r.c, 0) / v.length;
+  return { w: Math.round(mean(wins) * 10) / 10, l: Math.round(mean(losses) * 10) / 10, n: rows.length };
+}
+
+/** RR の動きから、土台をずらす点数を求める。 */
+export function rrShift(t: RrTrend | null | undefined): number {
+  if (!t || !t.n) return 0;
+  const points = (t.w + t.l) * RR_POINTS * (t.n / (t.n + RR_SHRINK));
+  return Math.round(Math.max(-RR_CAP, Math.min(RR_CAP, points)));
+}

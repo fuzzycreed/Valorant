@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actIndex, blendBase, gamesThisAct, newcomerBase, provenLevel, summarizeMmr, type RankHistory } from "../src/skill";
+import { actIndex, blendBase, gamesThisAct, newcomerBase, provenLevel, rrShift, summarizeMmr, summarizeRr, type RankHistory } from "../src/skill";
 
 const NOW = actIndex("e11a6")!;
 const act = (s: string, g: number, e: number) => ({ s, g, e });
@@ -83,5 +83,34 @@ describe("newcomerBase", () => {
     expect(newcomerBase(23)).toBe(265);
     expect(newcomerBase(100)).toBe(650);
     expect(newcomerBase(300)).toBe(900); // どれだけ高くても、ランクなしならゴールド1相当まで
+  });
+});
+
+describe("summarizeRr / rrShift", () => {
+  const T0 = Date.parse("2026-11-17T00:00:00Z");
+  const day = 24 * 60 * 60 * 1000;
+  const e = (daysAgo: number, change: number, extra: object = {}) => ({ date: new Date(T0 - daysAgo * day).toISOString(), last_change: change, queue_id: "competitive", ...extra });
+  it("勝ちの平均と負けの平均をまとめる", () => {
+    expect(summarizeRr([e(1, 28), e(2, -8), e(3, 26), e(4, -10)], T0)).toEqual({ w: 27, l: -9, n: 4 });
+  });
+  it("認定戦・放置ペナルティ・増減なし・古い試合は数えない", () => {
+    const h = [e(1, 20), e(2, -15), e(3, 22), e(4, -17), e(5, 40, { is_placement_match: true }), e(6, -30, { afk_penalty: 8 }), e(7, 0), e(200, 35)];
+    expect(summarizeRr(h, T0)).toEqual({ w: 21, l: -16, n: 4 });
+  });
+  it("勝ち・負けのどちらかが2試合に満たなければ使わない", () => {
+    expect(summarizeRr([e(1, 20), e(2, 22), e(3, -15)], T0)).toBeNull();
+    expect(summarizeRr([], T0)).toBeNull();
+    expect(summarizeRr(null, T0)).toBeNull();
+  });
+  it("直近20試合だけを見る", () => {
+    const recent = Array.from({ length: 20 }, (_, i) => e(i + 1, i % 2 ? -15 : 15));
+    expect(summarizeRr([...recent, e(30, 99), e(31, -1)], T0)).toEqual({ w: 15, l: -15, n: 20 });
+  });
+  it("差し引きがプラスなら土台を上げ、試合数が少ないほど弱め、上限で止める", () => {
+    expect(rrShift({ w: 18, l: -18, n: 20 })).toBe(0);
+    expect(rrShift({ w: 28, l: -8, n: 12 })).toBe(180); // 20 × 15 × 12/20
+    expect(rrShift({ w: 15, l: -21, n: 8 })).toBe(-45); // -6 × 15 × 8/16
+    expect(rrShift({ w: 40, l: -5, n: 20 })).toBe(300);
+    expect(rrShift(null)).toBe(0);
   });
 });

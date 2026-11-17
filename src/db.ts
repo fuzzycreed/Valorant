@@ -117,8 +117,14 @@ const DDL_V7 = [
   `UPDATE discord_links SET rank_updated_at = 0`,
 ];
 
+const DDL_V8 = [
+  // 直近のコンペで、勝ったとき・負けたときに RR がどれだけ動いたか（skill.ts の RrTrend を JSON で保存）
+  `ALTER TABLE discord_links ADD COLUMN rr_trend TEXT`,
+  `ALTER TABLE discord_links ADD COLUMN rr_updated_at INTEGER DEFAULT 0`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8];
 
 let ready: Promise<void> | null = null;
 
