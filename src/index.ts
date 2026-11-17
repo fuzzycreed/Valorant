@@ -13,7 +13,8 @@ export default {
       if (url.pathname.startsWith("/api/team/")) return await handleTeams(req, env, url.pathname.slice(4));
       if (url.pathname === "/api/sync" && req.method === "POST") {
         // 画面の「更新」ボタン用。新着検出は内部で5分に1回までに抑えられている。
-        return json(await syncStep(env, { maxMatches: 2 }));
+        const focus = url.searchParams.get("puuid") ?? undefined;
+        return json(await syncStep(env, { maxMatches: 2, focus }));
       }
       return await handleApi(req, env, url);
     } catch (e) {

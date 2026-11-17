@@ -1,4 +1,9 @@
 import { ensureSchema, type Env } from "./db";
+import { Henrik } from "./henrik";
+import { allowLookup, findAccount } from "./roster";
+
+/** 検索で登録できる人数の上限（D1 の容量と API の使用量を抑えるため）。 */
+const MAX_LOOKUP_PLAYERS = 300;
 
 const SUM_COLS = [
   "rounds", "rounds_won", "rounds_lost", "score", "kills", "deaths", "assists",
@@ -50,16 +55,87 @@ function cte(q: URLSearchParams) {
   return { sql: `WITH f AS (SELECT * FROM player_matches WHERE ${f.where} ORDER BY started_at DESC${limit})`, params: f.params };
 }
 
+/** RIOT_IDS に書かれた本人の一覧。先頭がサイトを開いたときに表示されるプレイヤー。 */
 async function players(env: Env) {
-  const { results } = await env.DB.prepare(
-    `SELECT puuid, name, tag, region, rank_json, rank_updated_at, discovered_at FROM players ORDER BY created_at`,
-  ).all<any>();
+  const { results } = await env.DB.prepare(`SELECT * FROM players WHERE source = 'config' ORDER BY created_at`).all<any>();
   const tracked = (env.RIOT_IDS ?? "").toLowerCase().split(",").map((s) => s.trim());
-  return json(
-    results
-      .filter((p) => tracked.includes(`${p.name}#${p.tag}`.toLowerCase()))
-      .map((p) => ({ ...p, rank: p.rank_json ? JSON.parse(p.rank_json) : null, rank_json: undefined })),
-  );
+  return json(results.filter((p) => tracked.includes(`${p.name}#${p.tag}`.toLowerCase())).map(playerView));
+}
+
+const playerView = (p: any) => ({
+  puuid: p.puuid,
+  name: p.name,
+  tag: p.tag,
+  region: p.region,
+  source: p.source,
+  rank: p.rank_json ? JSON.parse(p.rank_json) : null,
+  rank_updated_at: p.rank_updated_at,
+  discovered_at: p.discovered_at,
+});
+
+async function player(env: Env, puuid: string) {
+  const row = await env.DB.prepare(`SELECT * FROM players WHERE puuid = ?`).bind(puuid).first<any>();
+  return row ? json(playerView(row)) : json({ error: "このプレイヤーはまだ登録されていません。Riot ID で検索してください。" }, 404);
+}
+
+/** 検索欄の候補に出す、登録済みプレイヤーの一覧（最近見られた順）。 */
+async function knownPlayers(env: Env) {
+  const { results } = await env.DB.prepare(
+    `SELECT puuid, name, tag FROM players ORDER BY source = 'config' DESC, last_viewed_at DESC LIMIT 50`,
+  ).all();
+  return json(results);
+}
+
+/**
+ * Riot ID からプレイヤーを探して登録する。登録済みなら外部 API を呼ばずに返す。
+ * 試合の取り込みはここでは行わず、そのプレイヤーのページを開いたときの同期で進む。
+ */
+async function lookup(req: Request, env: Env) {
+  const body = (await req.json().catch(() => null)) as { riot_id?: unknown } | null;
+  const riotId = typeof body?.riot_id === "string" ? body.riot_id.trim() : "";
+  const at = riotId.lastIndexOf("#");
+  if (at < 1 || riotId.length > 60) return json({ error: "Riot ID は「名前#タグ」の形式で入力してください。" }, 400);
+  const name = riotId.slice(0, at).trim(), tag = riotId.slice(at + 1).trim();
+  const db = env.DB;
+  const brief = (p: any) => json({ puuid: p.puuid, name: p.name, tag: p.tag });
+  const insert = (p: { puuid: string; name: string; tag: string; region: string; platform: string }) =>
+    db
+      .prepare(
+        `INSERT INTO players (puuid, name, tag, region, platform, source, created_at, last_viewed_at)
+         VALUES (?, ?, ?, ?, ?, 'lookup', ?, ?)
+         ON CONFLICT (puuid) DO UPDATE SET name = excluded.name, tag = excluded.tag, last_viewed_at = excluded.last_viewed_at`,
+      )
+      .bind(p.puuid, p.name, p.tag, p.region, p.platform, Date.now(), Date.now())
+      .run();
+
+  const known = await db.prepare(`SELECT puuid, name, tag FROM players WHERE lower(name) = lower(?) AND lower(tag) = lower(?)`).bind(name, tag).first();
+  if (known) return brief(known);
+
+  // チーム分けで登録済みの人は、アカウント情報が手元にあるので外部 API を呼ばない
+  const link = await db
+    .prepare(`SELECT puuid, name, tag, region, platform FROM discord_links WHERE lower(name) = lower(?) AND lower(tag) = lower(?)`)
+    .bind(name, tag)
+    .first<{ puuid: string; name: string; tag: string; region: string; platform: string }>();
+  if (link) {
+    await insert(link);
+    return brief(link);
+  }
+
+  const count = await db.prepare(`SELECT COUNT(*) AS n FROM players WHERE source = 'lookup'`).first<{ n: number }>();
+  if ((count?.n ?? 0) >= MAX_LOOKUP_PLAYERS) return json({ error: `検索で登録できるのは ${MAX_LOOKUP_PLAYERS} 人までです。` }, 400);
+  if (!(await allowLookup(env))) return json({ error: "検索の回数が多すぎます。10分ほど待ってからもう一度試してください。" }, 429);
+  if (!env.HENRIK_API_KEY) return json({ error: "HENRIK_API_KEY が設定されていません" }, 500);
+
+  const found = await findAccount(new Henrik(env.HENRIK_API_KEY), riotId);
+  if (!found.ok) {
+    if (found.reason === "format") return json({ error: "Riot ID は「名前#タグ」の形式で入力してください。" }, 400);
+    if (found.reason === "not_found") return json({ error: `「${riotId}」が見つかりませんでした。綴りを確認してください。` }, 404);
+    return json({ error: "API が混み合っています。1分ほど待ってからもう一度試してください。" }, 429);
+  }
+  const acc = found.account;
+  const p = { puuid: acc.puuid, name: acc.name, tag: acc.tag, region: acc.region ?? env.REGION, platform: env.PLATFORM };
+  await insert(p);
+  return brief(p);
 }
 
 async function stats(env: Env, q: URLSearchParams) {
@@ -148,17 +224,19 @@ async function mmr(env: Env, q: URLSearchParams) {
   return json(results);
 }
 
-async function status(env: Env) {
+async function status(env: Env, q: URLSearchParams) {
   const db = env.DB;
-  const [queue, meta, count] = await db.batch<any>([
+  const [queue, meta, count, mine] = await db.batch<any>([
     db.prepare(`SELECT status, COUNT(*) AS n FROM match_queue GROUP BY status`),
     db.prepare(`SELECT value FROM meta WHERE key = 'last_sync'`),
     db.prepare(`SELECT COUNT(*) AS n FROM matches`),
+    db.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE status = 'pending' AND puuid = ?`).bind(q.get("puuid") ?? ""),
   ]);
   const by: Record<string, number> = {};
   for (const r of queue.results) by[r.status] = r.n;
   return json({
     pending: by.pending ?? 0,
+    focus_pending: mine.results[0]?.n ?? 0,
     done: by.done ?? 0,
     error: by.error ?? 0,
     matches: count.results[0]?.n ?? 0,
@@ -175,10 +253,14 @@ export async function handleApi(req: Request, env: Env, url: URL): Promise<Respo
     if (path === "/stats") return stats(env, q);
     if (path === "/matches") return matches(env, q);
     if (path === "/mmr") return mmr(env, q);
-    if (path === "/status") return status(env);
+    if (path === "/status") return status(env, q);
+    if (path === "/players/known") return knownPlayers(env);
+    const pm = path.match(/^\/player\/([0-9a-f-]{36})$/);
+    if (pm) return player(env, pm[1]);
     const m = path.match(/^\/match\/([0-9a-f-]{36})$/);
     if (m) return matchDetail(env, m[1]);
   }
+  if (req.method === "POST" && path === "/players/lookup") return lookup(req, env);
   return json({ error: "not found" }, 404);
 }
 

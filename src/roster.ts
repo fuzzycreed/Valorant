@@ -80,3 +80,20 @@ export async function recentMaps(env: Env): Promise<string[]> {
     .all<{ map: string }>();
   return results.map((r) => r.map);
 }
+
+const LOOKUP_WINDOW_MS = 10 * 60 * 1000;
+const LOOKUP_LIMIT = 15;
+
+/**
+ * Riot ID 検索の回数を10分単位で数える（公開サイトなので API の使いすぎを防ぐ）。
+ * 厳密な排他はしていない（多少の超過は許容）。
+ */
+export async function allowLookup(env: Env): Promise<boolean> {
+  const now = Date.now();
+  const row = await env.DB.prepare(`SELECT value FROM meta WHERE key = 'web_lookups'`).first<{ value: string }>();
+  let [start, count] = (row?.value ?? "0:0").split(":").map(Number);
+  if (now - start > LOOKUP_WINDOW_MS) [start, count] = [now, 0];
+  if (count >= LOOKUP_LIMIT) return false;
+  await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('web_lookups', ?)`).bind(`${start}:${count + 1}`).run();
+  return true;
+}

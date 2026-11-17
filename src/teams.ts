@@ -5,13 +5,11 @@ import { balance, rerollOptions } from "./balance";
 import { ensureSchema, type Env } from "./db";
 import { Henrik } from "./henrik";
 import { isStale, ratePlayers, refreshRanks, type Link, type Rated } from "./rating";
-import { findAccount, recentMaps, saveLink, WEB_PREFIX } from "./roster";
+import { allowLookup, findAccount, recentMaps, saveLink, WEB_PREFIX } from "./roster";
 
 const MAX_TEAM_PLAYERS = 10;
-/** ウェブから追加できる人数の上限と、Riot ID 検索の回数制限（公開サイトなので API の使いすぎを防ぐ）。 */
+/** ウェブから追加できる人数の上限。 */
 const MAX_WEB_PLAYERS = 60;
-const LOOKUP_WINDOW_MS = 10 * 60 * 1000;
-const LOOKUP_LIMIT = 15;
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -58,17 +56,6 @@ async function listPlayers(env: Env) {
     players: rated.map((r, i) => view(r, links[i])).sort((a, b) => a.name.localeCompare(b.name, "ja")),
     maps: await recentMaps(env),
   });
-}
-
-/** Riot ID 検索の回数を10分単位で数える。厳密な排他はしていない（多少の超過は許容）。 */
-async function allowLookup(env: Env): Promise<boolean> {
-  const now = Date.now();
-  const row = await env.DB.prepare(`SELECT value FROM meta WHERE key = 'web_lookups'`).first<{ value: string }>();
-  let [start, count] = (row?.value ?? "0:0").split(":").map(Number);
-  if (now - start > LOOKUP_WINDOW_MS) [start, count] = [now, 0];
-  if (count >= LOOKUP_LIMIT) return false;
-  await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('web_lookups', ?)`).bind(`${start}:${count + 1}`).run();
-  return true;
 }
 
 async function addPlayer(req: Request, env: Env) {

@@ -12,6 +12,11 @@
   <div class="wrap top-in">
     <a class="brand" href="#/">VALORANT 戦績</a>
     <div id="player" class="player"></div>
+    <form id="search" class="search">
+      <input type="text" name="riot_id" list="known" placeholder="Riot ID で検索（name#tag）" autocomplete="off" maxlength="60" aria-label="Riot ID で検索">
+      <datalist id="known"></datalist>
+      <button class="btn">検索</button>
+    </form>
     <div class="sync">
       <span id="sync-status" class="muted"></span>
       <button id="sync-btn" type="button" class="btn">更新</button>

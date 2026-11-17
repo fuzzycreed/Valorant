@@ -12,6 +12,9 @@ async function api(path, opt) {
 }
 
 const state = {
+  /** サイトを開いたときに表示する本人（RIOT_IDS の先頭）。 */
+  home: null,
+  /** いま表示しているプレイヤー。検索すると本人以外に切り替わる。 */
   player: null,
   filters: { queue: "competitive", season: "", agent: "", map: "", last: "" },
   metric: "hs",
@@ -49,11 +52,17 @@ const dayFmt = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "numer
 const seasonLabel = (s) => String(s).replace(/^e(\d+)a(\d+)$/, "E$1 A$2");
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, "0")}`;
 
+/** そのプレイヤーの戦績ページへのリンク先。未登録の人は開いたときに検索・登録される。 */
+const findHref = (name, tag) => `#/find/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`;
+const isHome = () => !state.home || state.player?.puuid === state.home.puuid;
+const base = () => (isHome() ? "#" : `#/player/${state.player.puuid}`);
+
 function agentCell(name, id, tag) {
   const img = id
     ? `<img src="https://media.valorant-api.com/agents/${esc(id)}/displayicon.png" alt="" loading="lazy" onerror="this.remove()">`
     : "";
-  return `<span class="agent">${img}${esc(name ?? "—")}${tag ? `<span class="muted">#${esc(tag)}</span>` : ""}</span>`;
+  const label = `${esc(name ?? "—")}${tag ? `<span class="muted">#${esc(tag)}</span>` : ""}`;
+  return `<span class="agent">${img}${tag ? `<a class="plink" href="${esc(findHref(name, tag))}" title="このプレイヤーの戦績を見る">${label}</a>` : label}</span>`;
 }
 function rankBadge(tier, rr) {
   if (tier == null) return "";
@@ -167,7 +176,11 @@ function renderPlayer() {
   $("#player").innerHTML = `
     <span class="name">${esc(p.name)}<span class="tag">#${esc(p.tag)}</span></span>
     ${cur ? rankBadge(cur.tier?.id, cur.rr) : ""}
-    ${peak?.tier ? `<span class="muted">最高 ${esc(tierName(peak.tier.id))}（${esc(seasonLabel(peak.season?.short ?? ""))}）</span>` : ""}`;
+    ${peak?.tier ? `<span class="muted">最高 ${esc(tierName(peak.tier.id))}（${esc(seasonLabel(peak.season?.short ?? ""))}）</span>` : ""}
+    ${isHome() ? "" : `<a class="pill" href="#/">${esc(state.home.name)} に戻る</a>`}`;
+  const tabs = $("#tabs").children;
+  tabs[0].href = isHome() ? "#/" : base();
+  tabs[1].href = base() + "/matches";
 }
 
 function renderFilters(options) {
@@ -225,7 +238,7 @@ async function viewOverview() {
   renderFilters(stats.options);
   const t = stats.totals;
   if (!t || !t.games) {
-    $("#view").innerHTML = `<div class="card empty">この条件に当てはまる試合がありません</div>`;
+    $("#view").innerHTML = `<div class="card empty">${state.syncing ? "試合データを取り込んでいます。少しずつ表示されます…" : "この条件に当てはまる試合がありません"}</div>`;
     return;
   }
   const d = derive(t);
@@ -405,7 +418,7 @@ async function viewMatch(id) {
   };
 
   $("#view").innerHTML = `
-    <a class="back" href="#/matches">← 試合一覧</a>
+    <a class="back" href="${base()}/matches">← 試合一覧</a>
     <div class="mhead">
       ${me ? resultCell(me.won) : ""}
       ${rb ? `<span class="score">${m.score[myTeam] ?? 0} - ${m.score[enemy] ?? 0}</span>` : ""}
@@ -529,7 +542,8 @@ function renderTeams() {
             <td class="l">${esc(p.name)}<span class="muted">#${esc(p.tag)}</span></td>
             <td class="l">${esc(teamRank(p))}</td><td class="l">${esc(ROLES[p.role] ?? "不明")}</td>
             <td title="ランク ${p.base} ＋ 成績補正 ${p.adj >= 0 ? "+" : ""}${p.adj}（直近 ${p.samples} 試合）">${p.rating}</td>
-            <td>${p.removable ? `<button type="button" class="btn small" data-act="remove">削除</button>` : ""}</td></tr>`).join("")}
+            <td><a class="plink muted" href="${esc(findHref(p.name, p.tag))}">戦績</a>
+              ${p.removable ? `<button type="button" class="btn small" data-act="remove">削除</button>` : ""}</td></tr>`).join("")}
           </tbody></table></div>` : `<div class="empty">まだ誰も登録されていません。上の欄に Riot ID を入れて追加してください</div>`}
 
         <div class="sub">ゲスト<small>Riot ID を使わず、名前とランクを手入力する</small></div>
@@ -638,7 +652,7 @@ $("#view").addEventListener("click", async (e) => {
     }
     return;
   }
-  if (row && !act) {
+  if (row && !act && !e.target.closest("a")) {
     const id = row.dataset.id;
     if (team.selected.has(id)) team.selected.delete(id);
     else if (teamSize() < 10) team.selected.add(id);
@@ -658,30 +672,38 @@ async function refreshStatus() {
   $("#sync-status").textContent = timeAgo(s.last_sync);
   return s;
 }
-/** 取り込み待ちが無くなるまで、少しずつ同期を進める（1回の呼び出しで2試合）。 */
-async function drain(force) {
+const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+/** 戦績の画面（概要・試合一覧）を表示中か。取り込み中に少しずつ再描画してよい画面。 */
+const onStatsView = () => !/^#\/(teams|match\/|find\/)/.test(location.hash);
+
+/**
+ * 表示中のプレイヤーについて同期を進める。新着の確認は開くたびに1回行い、
+ * その人の取り込み待ちが無くなるまで少しずつ（1回の呼び出しで2試合）取り込む。
+ */
+async function drain() {
   if (state.syncing) return;
   state.syncing = true;
   const btn = $("#sync-btn"), banner = $("#banner");
   btn.disabled = true;
+  const puuid = state.player?.puuid ?? "";
   try {
-    let first = true;
-    for (let i = 0; i < 100; i++) {
-      const s = await api("/status");
-      if (!first && s.pending === 0) break;
-      if (!force && first && s.pending === 0 && state.player) break;
-      if (s.pending > 0) { banner.hidden = false; banner.textContent = `試合データを取り込み中です… 残り ${s.pending} 試合（取り込み済み ${s.matches}）`; }
-      const r = await api("/sync", { method: "POST" });
-      first = false;
+    for (let i = 0; i < 150; i++) {
+      const r = await api("/sync?puuid=" + puuid, { method: "POST" });
+      if (!state.home) await loadHome();
+      if ((state.player?.puuid ?? "") !== puuid) break; // 別のプレイヤーに切り替えられた
       if (r.rateLimited) {
         banner.hidden = false;
         banner.textContent = "API のレート制限に達しました。1分ほど待ってから再開します…";
-        await new Promise((res) => setTimeout(res, 60000));
-      } else if (r.pending === 0) break;
-      else {
-        if (!state.player) await loadPlayer();
-        await new Promise((res) => setTimeout(res, 5000));
+        await wait(60000);
+        continue;
       }
+      // 本人は全体の取り込み待ち、検索した人はその人の分だけを見る
+      const left = isHome() ? r.pending : r.focusPending;
+      if (r.processed > 0 && onStatsView()) await route();
+      if (left === 0) break;
+      banner.hidden = false;
+      banner.textContent = `試合データを取り込み中です… 残り ${left} 試合`;
+      await wait(5000);
     }
   } catch (e) {
     banner.hidden = false;
@@ -692,11 +714,69 @@ async function drain(force) {
     btn.disabled = false;
   }
   banner.hidden = true;
-  await loadPlayer();
+  // 別のプレイヤーに切り替えられていたら、その人の同期を続けて始める
+  if ((state.player?.puuid ?? "") !== puuid) return drain();
+  await reloadPlayer();
   await refreshStatus();
-  route();
+  if (onStatsView()) route();
 }
-$("#sync-btn").addEventListener("click", () => drain(true));
+$("#sync-btn").addEventListener("click", () => drain());
+
+// ---------- プレイヤーの切り替えと検索 ----------
+
+async function loadHome() {
+  const players = await api("/players");
+  state.home = players[0] ?? null;
+  if (!state.player) setPlayer(state.home);
+}
+/** ランクなど、表示中のプレイヤーの情報を取り直す。 */
+async function reloadPlayer() {
+  if (!state.player) return loadHome();
+  const fresh = await api("/player/" + state.player.puuid).catch(() => null);
+  if (fresh && fresh.puuid === state.player.puuid) {
+    if (state.home?.puuid === fresh.puuid) state.home = fresh;
+    state.player = fresh;
+    renderPlayer();
+  }
+}
+function setPlayer(p) {
+  if (!p) return;
+  const switched = state.player && state.player.puuid !== p.puuid;
+  state.player = p;
+  // エージェントやマップの絞り込みは人ごとに候補が違うので、切り替えたら初期値に戻す
+  if (switched) state.filters = { queue: "competitive", season: "", agent: "", map: "", last: "" };
+  renderPlayer();
+}
+async function loadKnown() {
+  const known = await api("/players/known").catch(() => []);
+  $("#known").innerHTML = known.map((p) => `<option value="${esc(p.name)}#${esc(p.tag)}"></option>`).join("");
+}
+/** Riot ID からプレイヤーを探し、その人のページへ移動する。 */
+async function find(riotId) {
+  const banner = $("#banner");
+  banner.hidden = false;
+  banner.textContent = `「${riotId}」を検索しています…`;
+  try {
+    const p = await api("/players/lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ riot_id: riotId }) });
+    banner.hidden = true;
+    loadKnown();
+    const target = state.home?.puuid === p.puuid ? "#/" : "#/player/" + p.puuid;
+    if (location.hash === target) route();
+    else location.replace(target);
+  } catch (e) {
+    banner.textContent = e.message;
+    if (location.hash.startsWith("#/find/")) history.back();
+  }
+}
+$("#search").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = e.target.riot_id;
+  const riotId = input.value.trim();
+  if (!riotId) return;
+  input.value = "";
+  input.blur();
+  find(riotId);
+});
 
 // ---------- ルーティング ----------
 
@@ -704,35 +784,39 @@ let onResize = null;
 let resizeTimer;
 addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => onResize?.(), 150); });
 
-async function loadPlayer() {
-  const players = await api("/players");
-  state.player = players[0] ?? null;
-  renderPlayer();
-}
-
 async function route() {
   hideTip();
   onResize = null;
   const hash = location.hash.replace(/^#/, "") || "/";
-  const tab = hash === "/teams" ? "teams" : hash.startsWith("/match") ? "matches" : "overview";
-  for (const a of $("#tabs").children) a.classList.toggle("on", a.dataset.tab === tab);
-  if (tab === "teams") {
-    try {
-      await viewTeams();
-    } catch (e) {
-      $("#view").innerHTML = `<div class="card empty">読み込みに失敗しました: ${esc(e.message)}</div>`;
-    }
-    return;
-  }
-  if (!state.player) {
-    $("#filters").hidden = true;
-    $("#view").innerHTML = `<div class="card empty">まだデータがありません。初回の同期を実行しています…</div>`;
-    return;
-  }
+  const fm = hash.match(/^\/find\/([^/]+)\/([^/]+)$/);
+  if (fm) return find(`${decodeURIComponent(fm[1])}#${decodeURIComponent(fm[2])}`);
+
+  const pm = hash.match(/^\/player\/([0-9a-f-]{36})(\/matches)?$/);
+  const page = hash === "/teams" ? "teams" : hash.startsWith("/match/") ? "match" : hash === "/matches" || pm?.[2] ? "matches" : "overview";
+  const tab = page === "match" ? "matches" : page;
+
   try {
-    const m = hash.match(/^\/match\/([0-9a-f-]{36})$/);
-    if (m) await viewMatch(m[1]);
-    else if (hash === "/matches") await viewMatches();
+    // URL が指すプレイヤーに切り替える。試合詳細とチーム分けでは、直前に見ていた人のままにする
+    const before = state.player?.puuid;
+    if (pm && state.player?.puuid !== pm[1]) setPlayer(await api("/player/" + pm[1]));
+    else if (!pm && (page === "overview" || page === "matches") && state.home) setPlayer(state.home);
+    if (state.player && state.player.puuid !== before) drain();
+  } catch (e) {
+    $("#filters").hidden = true;
+    $("#view").innerHTML = `<div class="card empty">${esc(e.message)}</div>`;
+    return;
+  }
+  for (const a of $("#tabs").children) a.classList.toggle("on", a.dataset.tab === tab);
+
+  try {
+    if (page === "teams") return await viewTeams();
+    if (!state.player) {
+      $("#filters").hidden = true;
+      $("#view").innerHTML = `<div class="card empty">まだデータがありません。初回の同期を実行しています…</div>`;
+      return;
+    }
+    if (page === "match") await viewMatch(hash.slice("/match/".length));
+    else if (page === "matches") await viewMatches();
     else await viewOverview();
   } catch (e) {
     $("#view").innerHTML = `<div class="card empty">読み込みに失敗しました: ${esc(e.message)}</div>`;
@@ -742,10 +826,11 @@ addEventListener("hashchange", () => { route(); scrollTo(0, 0); });
 
 (async () => {
   try {
-    await loadPlayer();
+    await loadHome();
+    loadKnown();
     await route();
-    const s = await refreshStatus();
-    if (!state.player || s.pending > 0) drain(false);
+    refreshStatus();
+    drain();
   } catch (e) {
     $("#view").innerHTML = `<div class="card empty">読み込みに失敗しました: ${esc(e.message)}</div>`;
   }

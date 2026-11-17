@@ -12,12 +12,22 @@ const HISTORY_MAX = 100;
 /** Discord で登録された人の新着確認: 1人あたりの間隔と、1回の同期で確認する人数。 */
 const LINKED_INTERVAL_MS = 60 * 60 * 1000;
 const LINKED_PER_STEP = 2;
+/** サイトで検索された人: 最近見られた人だけ、間隔を空けて少人数ずつ新着を確認する。 */
+const LOOKUP_INTERVAL_MS = 2 * 60 * 60 * 1000;
+const LOOKUP_ACTIVE_MS = 14 * 24 * 60 * 60 * 1000;
+const LOOKUP_PER_STEP = 2;
+/** 検索された人について最初に遡る試合数（本人は取れるだけ遡る）。 */
+const LOOKUP_HISTORY = 40;
+/** 検索された人では取り込まないモード（ラウンド制ではなく、戦績の集計に使わない）。 */
+const SKIP_QUEUES = new Set(["deathmatch", "hurm", "ggteam", "snowball"]);
 
 export interface SyncResult {
   discovered: number;
   processed: number;
   failed: number;
   pending: number;
+  /** focus で指定したプレイヤーの取り込み待ち件数 */
+  focusPending: number;
   rateLimited: boolean;
   errors: string[];
 }
@@ -31,6 +41,8 @@ interface PlayerRow {
   rank_updated_at: number;
   discovered_at: number;
   backfilled: number;
+  source: string;
+  last_viewed_at: number;
 }
 
 function parseRiotIds(s: string): { name: string; tag: string }[] {
@@ -55,6 +67,12 @@ async function trackedPlayers(env: Env, api: Henrik): Promise<PlayerRow[]> {
       (p) => p.name.toLowerCase() === id.name.toLowerCase() && p.tag.toLowerCase() === id.tag.toLowerCase(),
     );
     if (hit) {
+      if (hit.source !== "config") {
+        // 検索で登録済みだった人が RIOT_IDS に追加された: 本人扱いに切り替え、全履歴を遡り直す
+        await env.DB.prepare(`UPDATE players SET source = 'config', backfilled = 0 WHERE puuid = ?`).bind(hit.puuid).run();
+        hit.source = "config";
+        hit.backfilled = 0;
+      }
       out.push(hit);
       continue;
     }
@@ -68,16 +86,18 @@ async function trackedPlayers(env: Env, api: Henrik): Promise<PlayerRow[]> {
       rank_updated_at: 0,
       discovered_at: 0,
       backfilled: 0,
+      source: "config",
+      last_viewed_at: 0,
     };
     // Riot ID を変更した場合も puuid は同じなので、名前だけ更新される
     await env.DB.prepare(
       `INSERT INTO players (puuid, name, tag, region, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (puuid) DO UPDATE SET name = excluded.name, tag = excluded.tag`,
+       ON CONFLICT (puuid) DO UPDATE SET name = excluded.name, tag = excluded.tag, source = 'config', backfilled = 0`,
     )
       .bind(row.puuid, row.name, row.tag, row.region, row.platform, Date.now())
       .run();
     const existing = results.find((p) => p.puuid === row.puuid);
-    out.push(existing ? { ...existing, name: row.name, tag: row.tag } : row);
+    out.push(existing ? { ...existing, name: row.name, tag: row.tag, source: "config", backfilled: 0 } : row);
   }
   return out;
 }
@@ -98,19 +118,27 @@ function mmrRows(history: any[]) {
     }));
 }
 
-/** 新しい試合IDとランク履歴を取得してキューに積む。初回は取れるだけ過去に遡る。 */
+/**
+ * 新しい試合IDとランク履歴を取得してキューに積む。
+ * 本人（config）は初回に取れるだけ過去へ遡り、生データも保存する。
+ * 検索された人（lookup）は初回に直近 LOOKUP_HISTORY 試合まで、ラウンド制のモードだけを積む。
+ */
 async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
   const now = Date.now();
+  const owner = p.source === "config";
   const found: { id: string; t: number; q: string | null }[] = [];
 
-  let end = HISTORY_PAGE;
+  const max = p.backfilled ? HISTORY_PAGE : owner ? HISTORY_MAX : LOOKUP_HISTORY;
   let total = HISTORY_PAGE;
-  for (let start = 0; start < total && start < HISTORY_MAX; start += HISTORY_PAGE, end += HISTORY_PAGE) {
-    const h = (await api.matchHistory(p.region, p.puuid, start, end)).data;
-    for (const e of h?.History ?? []) found.push({ id: e.MatchID, t: e.GameStartTime ?? 0, q: e.QueueID ?? null });
-    total = p.backfilled ? 0 : (h?.Total ?? 0);
+  for (let start = 0; start < total && start < max; start += HISTORY_PAGE) {
+    const h = (await api.matchHistory(p.region, p.puuid, start, start + HISTORY_PAGE)).data;
+    for (const e of h?.History ?? []) {
+      if (!owner && SKIP_QUEUES.has(e.QueueID)) continue;
+      found.push({ id: e.MatchID, t: e.GameStartTime ?? 0, q: e.QueueID ?? null });
+    }
+    total = h?.Total ?? 0;
   }
-  if (!p.backfilled) {
+  if (owner && !p.backfilled) {
     const stored = await api.storedMatches(p.region, p.name, p.tag);
     for (const e of stored?.data ?? []) {
       found.push({ id: e.meta.id, t: Date.parse(e.meta.started_at) || 0, q: (e.meta.mode ?? "").toLowerCase() || null });
@@ -124,10 +152,10 @@ async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
 
   const stmts: D1PreparedStatement[] = [
     env.DB.prepare(
-      `INSERT OR IGNORE INTO match_queue (match_id, region, started_at, queue, updated_at)
-       SELECT json_extract(value, '$.id'), ?1, json_extract(value, '$.t'), json_extract(value, '$.q'), ?2
+      `INSERT OR IGNORE INTO match_queue (match_id, region, started_at, queue, updated_at, puuid, keep_raw)
+       SELECT json_extract(value, '$.id'), ?1, json_extract(value, '$.t'), json_extract(value, '$.q'), ?2, ?4, ?5
        FROM json_each(?3)`,
-    ).bind(p.region, now, JSON.stringify(found)),
+    ).bind(p.region, now, JSON.stringify(found), p.puuid, owner ? 1 : 0),
     env.DB.prepare(
       `INSERT OR REPLACE INTO mmr_history (puuid, match_id, date, tier, tier_name, rr, rr_change, elo, map, season)
        SELECT ?1, json_extract(value, '$.match_id'), json_extract(value, '$.date'), json_extract(value, '$.tier'),
@@ -136,6 +164,16 @@ async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
        FROM json_each(?2)`,
     ).bind(p.puuid, JSON.stringify(mmr)),
   ];
+
+  if (owner) {
+    // 他の人の検索で先に取り込まれていた本人の試合は生データが無いので、取り直して保存する
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE match_queue SET keep_raw = 1, status = CASE WHEN status = 'done' THEN 'pending' ELSE status END
+         WHERE keep_raw = 0 AND match_id IN (SELECT json_extract(value, '$.id') FROM json_each(?))`,
+      ).bind(JSON.stringify(found)),
+    );
+  }
 
   if (now - (p.rank_updated_at ?? 0) > RANK_INTERVAL_MS) {
     const r = (await api.mmr(p.region, p.platform, p.name, p.tag)).data;
@@ -157,16 +195,41 @@ async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
  * 同期を1ステップ進める: 新着の検出 → キューから maxMatches 件だけ取り込み。
  * 無料プランの CPU 上限に収めるため、1回の呼び出しで処理する試合数を小さく保つ。
  */
-export async function syncStep(env: Env, opts: { maxMatches?: number; forceDiscover?: boolean } = {}): Promise<SyncResult> {
-  const out: SyncResult = { discovered: 0, processed: 0, failed: 0, pending: 0, rateLimited: false, errors: [] };
+export async function syncStep(
+  env: Env,
+  opts: { maxMatches?: number; forceDiscover?: boolean; /** いま画面で開かれているプレイヤー。先に確認し、その人の試合を優先して取り込む */ focus?: string } = {},
+): Promise<SyncResult> {
+  const out: SyncResult = { discovered: 0, processed: 0, failed: 0, pending: 0, focusPending: 0, rateLimited: false, errors: [] };
+  const focus = opts.focus ?? "";
   if (!env.HENRIK_API_KEY) throw new Error("HENRIK_API_KEY が設定されていません");
   await ensureSchema(env.DB);
   const api = new Henrik(env.HENRIK_API_KEY);
   const now = Date.now();
 
   try {
+    const seen = new Set<string>();
     for (const p of await trackedPlayers(env, api)) {
+      seen.add(p.puuid);
       if (!opts.forceDiscover && now - (p.discovered_at ?? 0) < DISCOVER_INTERVAL_MS) continue;
+      out.discovered += await discover(env, api, p);
+    }
+
+    // 検索された人: いま開かれている人を最優先、それ以外は最近見られた人を古い順に少しずつ
+    const lookups = await env.DB.batch<PlayerRow>([
+      env.DB.prepare(`SELECT * FROM players WHERE puuid = ?`).bind(focus),
+      env.DB.prepare(
+        `SELECT * FROM players WHERE source = 'lookup' AND last_viewed_at > ? AND discovered_at < ? ORDER BY discovered_at LIMIT ?`,
+      ).bind(now - LOOKUP_ACTIVE_MS, now - LOOKUP_INTERVAL_MS, LOOKUP_PER_STEP),
+    ]);
+    const viewed = lookups[0].results[0];
+    if (viewed) await env.DB.prepare(`UPDATE players SET last_viewed_at = ? WHERE puuid = ?`).bind(now, viewed.puuid).run();
+    const due = [
+      ...(viewed && now - (viewed.discovered_at ?? 0) >= DISCOVER_INTERVAL_MS ? [viewed] : []),
+      ...lookups[1].results,
+    ];
+    for (const p of due) {
+      if (seen.has(p.puuid)) continue;
+      seen.add(p.puuid);
       out.discovered += await discover(env, api, p);
     }
 
@@ -182,16 +245,17 @@ export async function syncStep(env: Env, opts: { maxMatches?: number; forceDisco
     }
 
     const { results } = await env.DB.prepare(
-      `SELECT match_id, region, attempts FROM match_queue WHERE status = 'pending' ORDER BY started_at DESC LIMIT ?`,
+      `SELECT match_id, region, attempts, keep_raw FROM match_queue WHERE status = 'pending'
+       ORDER BY (puuid = ?) DESC, started_at DESC LIMIT ?`,
     )
-      .bind(opts.maxMatches ?? 2)
-      .all<{ match_id: string; region: string; attempts: number }>();
+      .bind(focus, opts.maxMatches ?? 2)
+      .all<{ match_id: string; region: string; attempts: number; keep_raw: number }>();
 
     for (const q of results) {
       try {
         const body = await api.matchText(q.region, q.match_id);
         const computed = computeMatch(JSON.parse(body).data);
-        await env.DB.batch(ingestStatements(env.DB, computed, body));
+        await env.DB.batch(ingestStatements(env.DB, computed, q.keep_raw ? body : null));
         out.processed++;
       } catch (e) {
         if (e instanceof HenrikError && e.status === 429) throw e;
@@ -209,8 +273,13 @@ export async function syncStep(env: Env, opts: { maxMatches?: number; forceDisco
     else throw e;
   }
 
-  const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE status = 'pending'`).first<{ n: number }>();
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, SUM(puuid = ?) AS mine FROM match_queue WHERE status = 'pending'`,
+  )
+    .bind(focus)
+    .first<{ n: number; mine: number | null }>();
   out.pending = row?.n ?? 0;
+  out.focusPending = row?.mine ?? 0;
   await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)`).bind(String(Date.now())).run();
   return out;
 }

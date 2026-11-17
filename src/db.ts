@@ -69,8 +69,21 @@ const DDL_V2 = [
      lobby_id TEXT NOT NULL, user_id TEXT NOT NULL, joined_at INTEGER, PRIMARY KEY (lobby_id, user_id))`,
 ];
 
+const DDL_V3 = [
+  // source: 'config' = RIOT_IDS に書かれた本人（全履歴を取り込み、生データも保存）
+  //         'lookup' = サイトで検索された人（直近の試合だけ取り込み、見られている間だけ更新）
+  `ALTER TABLE players ADD COLUMN source TEXT NOT NULL DEFAULT 'config'`,
+  `ALTER TABLE players ADD COLUMN last_viewed_at INTEGER DEFAULT 0`,
+  // puuid: この試合を取り込み待ちに積んだプレイヤー（その人のページを開いているとき優先して取り込む）
+  // keep_raw: 生データも保存するか。容量を抑えるため、本人の試合だけ保存する
+  `ALTER TABLE match_queue ADD COLUMN puuid TEXT`,
+  `ALTER TABLE match_queue ADD COLUMN keep_raw INTEGER NOT NULL DEFAULT 0`,
+  `UPDATE match_queue SET keep_raw = 1`,
+  `CREATE INDEX IF NOT EXISTS match_queue_puuid ON match_queue (puuid, status)`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3];
 
 let ready: Promise<void> | null = null;
 
