@@ -188,6 +188,20 @@ function emptyStats(p: any, rounds: number): PlayerMatchStats {
   };
 }
 
+/**
+ * 集計を分ける単位（モード）を決める。基本は API のキューID。
+ * カスタムゲームはキューIDが空文字で返ってくるので、内容で2種類に分ける:
+ *   custom5v5 … 通常ルール（爆破）で 5対5 の試合。普通の対戦として集計できる
+ *   custom    … それ以外（スカーミッシュ、デスマッチ、少人数や人数差のある試合など）
+ */
+function classifyQueue(md: any, players: any[]): string {
+  const id = md.queue?.id;
+  if (id !== "") return id ?? "unknown";
+  const count = (team: string) => players.filter((p) => p.team_id === team).length;
+  const fiveOnFive = md.queue?.mode_type === "Standard" && players.length === 10 && count("Red") === 5 && count("Blue") === 5;
+  return fiveOnFive ? "custom5v5" : "custom";
+}
+
 export function computeMatch(raw: any): ComputedMatch {
   const md = raw.metadata;
   const rawPlayers: any[] = raw.players ?? [];
@@ -195,7 +209,7 @@ export function computeMatch(raw: any): ComputedMatch {
   const rawKills: any[] = raw.kills ?? [];
   const teams: any[] = raw.teams ?? [];
   // カスタムゲームは API 上のキューIDが空文字になる。扱いやすいよう "custom" に揃える
-  const queue: string = md.queue?.id === "" ? "custom" : (md.queue?.id ?? "unknown");
+  const queue = classifyQueue(md, rawPlayers);
 
   const twoTeams = teams.length === 2;
   const roundBased = twoTeams && rawRounds.length > 1 && !NON_ROUND_QUEUES.has(queue);

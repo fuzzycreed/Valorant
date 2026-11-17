@@ -95,8 +95,17 @@ const DDL_V4 = [
   `UPDATE player_matches SET queue = 'custom' WHERE queue = ''`,
 ];
 
+const DDL_V5 = [
+  // カスタムを「通常ルールの 5対5」と「それ以外」に分ける（判定は stats.ts の classifyQueue と同じ）
+  `UPDATE matches SET queue = 'custom5v5' WHERE queue = 'custom' AND mode_type = 'Standard' AND match_id IN (
+     SELECT match_id FROM player_matches GROUP BY match_id
+     HAVING COUNT(*) = 10 AND SUM(team = 'Red') = 5 AND SUM(team = 'Blue') = 5)`,
+  `UPDATE player_matches SET queue = 'custom5v5' WHERE queue = 'custom'
+     AND match_id IN (SELECT match_id FROM matches WHERE queue = 'custom5v5')`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5];
 
 let ready: Promise<void> | null = null;
 

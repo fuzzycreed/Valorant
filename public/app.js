@@ -25,7 +25,8 @@ const state = {
 
 const QUEUES = {
   competitive: "コンペティティブ", unrated: "アンレート", swiftplay: "スイフトプレイ", spikerush: "スパイクラッシュ",
-  deathmatch: "デスマッチ", hurm: "チームデスマッチ", ggteam: "エスカレーション", premier: "Premier", custom: "カスタム",
+  deathmatch: "デスマッチ", hurm: "チームデスマッチ", ggteam: "エスカレーション", premier: "Premier",
+  custom5v5: "カスタム（5vs5）", custom: "カスタム（その他）", skirmish_2v2: "スカーミッシュ",
 };
 const TIER_GROUPS = ["アイアン", "ブロンズ", "シルバー", "ゴールド", "プラチナ", "ダイヤ", "アセンダント", "イモータル"];
 function tierName(id) {
@@ -196,7 +197,7 @@ function renderFilters(options) {
   const form = $("#filters");
   form.hidden = false;
   form.innerHTML =
-    sel("queue", "モード", [...queues, ["all", "すべて（カスタムを除く）"]]) +
+    sel("queue", "モード", [...queues, ["all", "通常マッチの合計（カスタムを除く）"]]) +
     sel("season", "アクト", [["", "すべて"], ...opts("season").map((o) => [o.value, seasonLabel(o.value)])]) +
     sel("agent", "エージェント", [["", "すべて"], ...opts("agent").map((o) => [o.value, o.value]).sort((a, b) => a[1].localeCompare(b[1]))]) +
     sel("map", "マップ", [["", "すべて"], ...opts("map").map((o) => [o.value, o.value]).sort((a, b) => a[1].localeCompare(b[1]))]) +

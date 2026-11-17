@@ -33,9 +33,11 @@ function filterCte(q: URLSearchParams, alias = "") {
   const where = [`${a}puuid = ?`];
   const params: unknown[] = [q.get("puuid") ?? ""];
   const queue = q.get("queue") ?? "competitive";
-  // 「すべて」はマッチメイクのラウンド制モードの合算。カスタムは相手や人数が毎回違い、
-  // ダメージも記録されないので、明示的に選んだときだけ表示する
-  if (queue === "all") where.push(`${a}round_based = 1 AND ${a}queue != 'custom'`);
+  // 「すべて」は 5対5 の通常マッチ（コンペ、アンレート、Premier、スイフトプレイ）の合算。
+  // カスタムと、2対2 のスカーミッシュなど人数やルールが違うモードは、選んだときだけ表示する
+  if (queue === "all") {
+    where.push(`${a}round_based = 1 AND ${a}mode_type IN ('Standard', 'Swiftplay') AND ${a}queue NOT IN ('custom', 'custom5v5')`);
+  }
   else {
     where.push(`${a}queue = ?`);
     params.push(queue);

@@ -134,3 +134,34 @@ describe("カスタムゲーム", () => {
     expect(by(c, "b1").dmg_rounds).toBe(2);
   });
 });
+
+describe("カスタムゲームの分類", () => {
+  const game = (modeType: string, red: number, blue: number, queueId = "") =>
+    computeMatch({
+      metadata: {
+        match_id: "c2", started_at: "2026-01-01T00:00:00Z", game_length_in_ms: 1,
+        queue: { id: queueId, name: "x", mode_type: modeType }, map: { name: "Haven" }, season: { short: "e1a1" },
+      },
+      players: [
+        ...Array.from({ length: red }, (_, i) => P(`r${i}`, "Red")),
+        ...Array.from({ length: blue }, (_, i) => P(`b${i}`, "Blue")),
+      ],
+      teams: [
+        { team_id: "Red", won: true, rounds: { won: 2, lost: 0 } },
+        { team_id: "Blue", won: false, rounds: { won: 0, lost: 2 } },
+      ],
+      rounds: [R(0, "Red", "Attacker"), R(1, "Red", "Attacker")],
+      kills: [],
+    }).match.queue;
+
+  it("通常ルールの 5対5 は custom5v5", () => expect(game("Standard", 5, 5)).toBe("custom5v5"));
+  it("人数が 5対5 でなければ custom", () => {
+    expect(game("Standard", 5, 4)).toBe("custom");
+    expect(game("Standard", 2, 2)).toBe("custom");
+  });
+  it("スカーミッシュやデスマッチのカスタムは custom", () => {
+    expect(game("Skirmish", 2, 2)).toBe("custom");
+    expect(game("Team Deathmatch", 5, 5)).toBe("custom");
+  });
+  it("マッチメイクの試合はキューIDのまま", () => expect(game("Standard", 5, 5, "competitive")).toBe("competitive"));
+});
