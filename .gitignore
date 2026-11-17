@@ -2,3 +2,5 @@ node_modules/
 .wrangler/
 .dev.vars
 *.log
+# 分析や検証用の使い捨てスクリプト
+scripts/_*
