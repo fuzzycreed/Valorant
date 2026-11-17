@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>VALORANT 戦績</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="#/">VALORANT 戦績</a>
+    <div id="player" class="player"></div>
+    <div class="sync">
+      <span id="sync-status" class="muted"></span>
+      <button id="sync-btn" type="button" class="btn">更新</button>
+    </div>
+  </div>
+  <nav class="wrap tabs" id="tabs">
+    <a href="#/" data-tab="overview">概要</a>
+    <a href="#/matches" data-tab="matches">試合一覧</a>
+  </nav>
+</header>
+<main class="wrap">
+  <div id="banner" class="banner" hidden></div>
+  <form id="filters" class="filters" hidden></form>
+  <div id="view"></div>
+</main>
+<div id="tip" class="tip" hidden></div>
+<footer class="wrap foot muted">
+  データ: HenrikDev API（非公式）。このサイトは Riot Games の承認・後援を受けたものではありません。
+</footer>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

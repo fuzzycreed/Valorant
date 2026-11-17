@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "valorant-stats",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // database_id を書かなければ、初回デプロイ時に wrangler が D1 を自動作成する
+  "d1_databases": [{ "binding": "DB", "database_name": "valorant-stats" }],
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "vars": {
+    // 追跡する Riot ID（カンマ区切りで複数可）
+    "RIOT_IDS": "cinder#qshen",
+    "REGION": "ap",
+    "PLATFORM": "pc"
+  },
+  "observability": { "enabled": true }
+}
