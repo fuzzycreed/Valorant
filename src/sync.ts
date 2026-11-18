@@ -11,6 +11,10 @@ const MAX_ATTEMPTS = 5;
 const HISTORY_PAGE = 20;
 const HISTORY_MAX = 100;
 /** Discord で登録された人の新着確認: 1人あたりの間隔と、1回の同期で確認する人数。 */
+/** 本人のアカウントを、1回の同期で何人まで確認するか。 */
+const CONFIG_PER_STEP = 3;
+/** RIOT_IDS に書いたのに取得できなかった ID を、次に試し直すまでの間隔。 */
+const MISSING_RETRY_MS = 60 * 60 * 1000;
 const LINKED_INTERVAL_MS = 60 * 60 * 1000;
 const LINKED_PER_STEP = 2;
 /** サイトで検索された人: 最近見られた人だけ、間隔を空けて少人数ずつ新着を確認する。 */
@@ -62,6 +66,10 @@ function parseRiotIds(s: string): { name: string; tag: string }[] {
 async function trackedPlayers(env: Env, api: Henrik): Promise<PlayerRow[]> {
   const ids = parseRiotIds(env.RIOT_IDS);
   const { results } = await env.DB.prepare(`SELECT * FROM players`).all<PlayerRow>();
+  // 取得できなかった ID（長期間プレイしていないアカウントなど）は、しばらく間を空けてから試し直す
+  const misses = new Map(
+    (await env.DB.prepare(`SELECT key, value FROM meta WHERE key LIKE 'miss:%'`).all<{ key: string; value: string }>()).results.map((r) => [r.key, Number(r.value)]),
+  );
   const out: PlayerRow[] = [];
   for (const id of ids) {
     const hit = results.find(
@@ -77,7 +85,18 @@ async function trackedPlayers(env: Env, api: Henrik): Promise<PlayerRow[]> {
       out.push(hit);
       continue;
     }
-    const acc = (await api.account(id.name, id.tag)).data;
+    const missKey = `miss:${id.name.toLowerCase()}#${id.tag.toLowerCase()}`;
+    if (Date.now() - (misses.get(missKey) ?? 0) < MISSING_RETRY_MS) continue;
+    let acc: any;
+    try {
+      acc = (await api.account(id.name, id.tag)).data;
+    } catch (e) {
+      // 1つの ID が引けないだけで全体の同期を止めない（レート制限は呼び出し元で扱う）
+      if (!(e instanceof HenrikError) || e.status === 429) throw e;
+      console.warn("account lookup failed", id.name, id.tag, e.status);
+      await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`).bind(missKey, String(Date.now())).run();
+      continue;
+    }
     const row: PlayerRow = {
       puuid: acc.puuid,
       name: acc.name,
@@ -124,6 +143,18 @@ function mmrRows(history: any[]) {
  * 本人（config）は初回に取れるだけ過去へ遡り、生データも保存する。
  * 検索された人（lookup）は初回に直近 LOOKUP_HISTORY 試合まで、ラウンド制のモードだけを積む。
  */
+/** discover を呼び、そのプレイヤーだけの失敗（アカウントが引けない等）なら次回まで見送って先へ進む。 */
+async function safeDiscover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
+  try {
+    return await discover(env, api, p);
+  } catch (e) {
+    if (!(e instanceof HenrikError) || e.status === 429) throw e;
+    console.warn("discover failed", p.name, p.tag, e.status);
+    await env.DB.prepare(`UPDATE players SET discovered_at = ? WHERE puuid = ?`).bind(Date.now(), p.puuid).run();
+    return 0;
+  }
+}
+
 async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
   const now = Date.now();
   const owner = p.source === "config";
@@ -209,10 +240,14 @@ export async function syncStep(
 
   try {
     const seen = new Set<string>();
-    for (const p of await trackedPlayers(env, api)) {
-      seen.add(p.puuid);
-      if (!opts.forceDiscover && now - (p.discovered_at ?? 0) < DISCOVER_INTERVAL_MS) continue;
-      out.discovered += await discover(env, api, p);
+    // 本人のアカウント: いま開かれている人を先頭に、確認が古い順に1回あたり数人まで（API の回数制限に収めるため）
+    const tracked = await trackedPlayers(env, api);
+    for (const p of tracked) seen.add(p.puuid);
+    const dueOwn = tracked
+      .filter((p) => opts.forceDiscover || now - (p.discovered_at ?? 0) >= DISCOVER_INTERVAL_MS)
+      .sort((a, b) => Number(b.puuid === focus) - Number(a.puuid === focus) || (a.discovered_at ?? 0) - (b.discovered_at ?? 0));
+    for (const p of opts.forceDiscover ? dueOwn : dueOwn.slice(0, CONFIG_PER_STEP)) {
+      out.discovered += await safeDiscover(env, api, p);
     }
 
     // 検索された人: いま開かれている人を最優先、それ以外は最近見られた人を古い順に少しずつ
@@ -231,7 +266,7 @@ export async function syncStep(
     for (const p of due) {
       if (seen.has(p.puuid)) continue;
       seen.add(p.puuid);
-      out.discovered += await discover(env, api, p);
+      out.discovered += await safeDiscover(env, api, p);
     }
 
     // Discord で登録された人は、確認が古い順に少人数ずつ見る（API のレート制限に収めるため）
