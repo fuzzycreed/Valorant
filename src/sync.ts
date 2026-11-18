@@ -1,4 +1,5 @@
 import { ensureSchema, ingestStatements, type Env } from "./db";
+import { gunzip, gzip } from "./gz";
 import { queueRecentMatches } from "./roster";
 import { Henrik, HenrikError } from "./henrik";
 import { refreshRanks, type Link } from "./rating";
@@ -281,7 +282,22 @@ export async function syncStep(
   out.pending = row?.n ?? 0;
   out.focusPending = row?.mine ?? 0;
   await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)`).bind(String(Date.now())).run();
+  // 試合を取り込まなかった回にだけ、未圧縮の生データを少しずつ圧縮する（処理の最後に置き、失敗しても同期には響かせない）
+  if (!out.processed && !out.rateLimited) await compactRaw(env, COMPACT_PER_STEP).catch((e) => console.warn("compact failed", e));
   return out;
+}
+
+const COMPACT_PER_STEP = 2;
+
+/** 未圧縮の生データを gzip で圧縮し直す。圧縮した件数を返す。 */
+export async function compactRaw(env: Env, limit: number): Promise<number> {
+  const { results } = await env.DB.prepare(`SELECT match_id, body FROM match_raw WHERE gz IS NULL AND body IS NOT NULL LIMIT ?`)
+    .bind(limit)
+    .all<{ match_id: string; body: string }>();
+  for (const row of results) {
+    await env.DB.prepare(`UPDATE match_raw SET gz = ?, body = NULL WHERE match_id = ?`).bind(await gzip(row.body), row.match_id).run();
+  }
+  return results.length;
 }
 
 /**
@@ -294,13 +310,15 @@ export async function recomputeAll(env: Env): Promise<number> {
   let n = 0;
   for (;;) {
     const { results } = await env.DB.prepare(
-      `SELECT match_id, body FROM match_raw WHERE match_id > ? ORDER BY match_id LIMIT 5`,
+      `SELECT match_id, body, gz FROM match_raw WHERE match_id > ? ORDER BY match_id LIMIT 5`,
     )
       .bind(after)
-      .all<{ match_id: string; body: string }>();
+      .all<{ match_id: string; body: string | null; gz: ArrayBuffer | number[] | null }>();
     if (!results.length) return n;
     for (const row of results) {
-      await env.DB.batch(ingestStatements(env.DB, computeMatch(JSON.parse(row.body).data), null));
+      const body = row.body ?? (row.gz ? await gunzip(row.gz) : null);
+      if (!body) continue;
+      await env.DB.batch(ingestStatements(env.DB, computeMatch(JSON.parse(body).data), null));
       n++;
     }
     after = results[results.length - 1].match_id;

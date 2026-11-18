@@ -215,11 +215,12 @@ async function mmr(env: Env, q: URLSearchParams) {
 
 async function status(env: Env, q: URLSearchParams) {
   const db = env.DB;
-  const [queue, meta, count, mine] = await db.batch<any>([
+  const [queue, meta, count, mine, raw] = await db.batch<any>([
     db.prepare(`SELECT status, COUNT(*) AS n FROM match_queue GROUP BY status`),
     db.prepare(`SELECT value FROM meta WHERE key = 'last_sync'`),
     db.prepare(`SELECT COUNT(*) AS n FROM matches`),
     db.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE status = 'pending' AND puuid = ?`).bind(q.get("puuid") ?? ""),
+    db.prepare(`SELECT COUNT(*) AS n, SUM(gz IS NULL) AS plain FROM match_raw`),
   ]);
   const by: Record<string, number> = {};
   for (const r of queue.results) by[r.status] = r.n;
@@ -230,6 +231,10 @@ async function status(env: Env, q: URLSearchParams) {
     error: by.error ?? 0,
     matches: count.results[0]?.n ?? 0,
     last_sync: Number(meta.results[0]?.value ?? 0),
+    // データベースの使用量（バイト）と、生データの件数・うち圧縮待ちの件数
+    db_bytes: Number(raw.meta?.size_after ?? 0),
+    raw: raw.results[0]?.n ?? 0,
+    raw_uncompressed: raw.results[0]?.plain ?? 0,
   });
 }
 

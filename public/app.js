@@ -741,7 +741,9 @@ function timeAgo(ts) {
 }
 async function refreshStatus() {
   const s = await api("/status");
-  $("#sync-status").textContent = timeAgo(s.last_sync);
+  // D1（無料プラン）の上限は 1データベース 500MB
+  const usage = s.db_bytes ? ` ・ データ ${(s.db_bytes / 1e6).toFixed(0)} / 500 MB` : "";
+  $("#sync-status").textContent = timeAgo(s.last_sync) + usage;
   return s;
 }
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));

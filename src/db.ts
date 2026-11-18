@@ -117,14 +117,26 @@ const DDL_V7 = [
   `UPDATE discord_links SET rank_updated_at = 0`,
 ];
 
+/**
+ * 生データを残すモード。レートの計算に使うモード（コンペ・アンレート・Premier）と、5vs5 カスタム、スイフトプレイ。
+ * それ以外（デスマッチなど）は集計値だけを残す。
+ */
+export const RAW_QUEUES = ["competitive", "custom5v5", "unrated", "swiftplay", "premier"] as const;
+
 const DDL_V8 = [
   // 直近のコンペで、勝ったとき・負けたときに RR がどれだけ動いたか（skill.ts の RrTrend を JSON で保存）
   `ALTER TABLE discord_links ADD COLUMN rr_trend TEXT`,
   `ALTER TABLE discord_links ADD COLUMN rr_updated_at INTEGER DEFAULT 0`,
 ];
 
+const DDL_V9 = [
+  // 生データは gzip で圧縮して gz に入れる（body は取り込み直後の未圧縮の一時置き場になる）
+  `ALTER TABLE match_raw ADD COLUMN gz BLOB`,
+  `DELETE FROM match_raw WHERE match_id IN (SELECT match_id FROM matches WHERE queue NOT IN (${RAW_QUEUES.map((q) => `'${q}'`).join(", ")}))`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9];
 
 let ready: Promise<void> | null = null;
 
@@ -154,7 +166,11 @@ export function ensureSchema(db: D1Database): Promise<void> {
 /** D1 の1行サイズ上限（2MB）に収まる場合だけ生データを保存する。 */
 const RAW_MAX_BYTES = 1_800_000;
 
-/** 1試合分の計算結果を保存する。json_each で10人分を1文にまとめ、クエリ数を抑える。 */
+/**
+ * 1試合分の計算結果を保存する。json_each で10人分を1文にまとめ、クエリ数を抑える。
+ * rawBody を渡すと、残す対象のモードに限り生データも保存する。ここでは未圧縮のまま置き、圧縮は compactRaw が後から行う
+ * （取り込みと圧縮を同じ回に行うと、1回の処理に使える CPU 時間を超えるおそれがあるため）。
+ */
 export function ingestStatements(db: D1Database, c: ComputedMatch, rawBody: string | null): D1PreparedStatement[] {
   const m = c.match;
   const now = Date.now();
@@ -184,8 +200,8 @@ export function ingestStatements(db: D1Database, c: ComputedMatch, rawBody: stri
       .prepare(`UPDATE match_queue SET status = 'done', error = NULL, updated_at = ? WHERE match_id = ?`)
       .bind(now, m.match_id),
   ];
-  if (rawBody && rawBody.length < RAW_MAX_BYTES) {
-    stmts.push(db.prepare(`INSERT OR REPLACE INTO match_raw (match_id, body) VALUES (?, ?)`).bind(m.match_id, rawBody));
+  if (rawBody && rawBody.length < RAW_MAX_BYTES && (RAW_QUEUES as readonly string[]).includes(m.queue)) {
+    stmts.push(db.prepare(`INSERT OR REPLACE INTO match_raw (match_id, body, gz) VALUES (?, ?, NULL)`).bind(m.match_id, rawBody));
   }
   return stmts;
 }
