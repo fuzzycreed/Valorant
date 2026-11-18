@@ -154,6 +154,23 @@ Cloudflare Workers + D1 で動き、データは [HenrikDev API](https://docs.he
 
 自分だけに見せたい場合は、Cloudflare Zero Trust の Access でそのドメインにログイン制限をかける。
 
+## 分析用の保管庫（R2、任意）
+
+取り込んだ試合の集計結果を Cloudflare R2 のバケット `valorant-stats-archive` に書き出し、別の環境（分析用の作業環境など）からまとめて取り出せるようにする。D1 の容量（500MB）とは別枠で、R2 の無料枠（10GB）に収まる。
+
+- `matches/<試合ID>.json`: 1試合ぶんの集計（`matches` の1行と `player_matches` の全行。約30KB）。同期のたびに6試合ずつ書き出す
+- `people/<日付>.json`: その日の `players` と登録者の状態（ランク・過去の実績・RR の動き）の控え。1日1回。Discord のユーザーID は含めない
+- `crawl/...`: 分析側が集めた追加の試合（`npm run archive -- push` で置く）
+
+読み出しは `/api/archive/...` で、`Authorization: Bearer <合言葉>` が必要。合言葉は Cloudflare の Secret `ARCHIVE_TOKEN` に設定する（未設定なら API は無効で、書き出しだけが動く）。
+
+```sh
+ARCHIVE_TOKEN=xxxx npm run archive -- pull people/   # 保管庫 → ローカル D1（people/ に日ごとの控えを保存）
+ARCHIVE_TOKEN=xxxx npm run archive -- push           # ローカルにだけある試合 → 保管庫の crawl/ 以下
+```
+
+書き出しの進み具合は `/api/status` の `archive`（保管庫が使えるか）と `archive_pending`（未書き出しの試合数）で分かる。
+
 ## ローカル開発
 
 ```bash

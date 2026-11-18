@@ -215,12 +215,13 @@ async function mmr(env: Env, q: URLSearchParams) {
 
 async function status(env: Env, q: URLSearchParams) {
   const db = env.DB;
-  const [queue, meta, count, mine, raw] = await db.batch<any>([
+  const [queue, meta, count, mine, raw, unarchived] = await db.batch<any>([
     db.prepare(`SELECT status, COUNT(*) AS n FROM match_queue GROUP BY status`),
     db.prepare(`SELECT value FROM meta WHERE key = 'last_sync'`),
     db.prepare(`SELECT COUNT(*) AS n FROM matches`),
     db.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE status = 'pending' AND puuid = ?`).bind(q.get("puuid") ?? ""),
     db.prepare(`SELECT COUNT(*) AS n, SUM(gz IS NULL) AS plain FROM match_raw`),
+    db.prepare(`SELECT COUNT(*) AS n FROM matches WHERE archived = 0`),
   ]);
   const by: Record<string, number> = {};
   for (const r of queue.results) by[r.status] = r.n;
@@ -235,6 +236,9 @@ async function status(env: Env, q: URLSearchParams) {
     db_bytes: Number(raw.meta?.size_after ?? 0),
     raw: raw.results[0]?.n ?? 0,
     raw_uncompressed: raw.results[0]?.plain ?? 0,
+    // 分析用の保管庫（R2）が使えるかと、まだ書き出していない試合の数
+    archive: !!env.ARCHIVE,
+    archive_pending: unarchived.results[0]?.n ?? 0,
   });
 }
 

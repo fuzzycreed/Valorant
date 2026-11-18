@@ -13,6 +13,9 @@ export interface Env {
   DISCORD_BOT_TOKEN?: string;
   /** テスト用。既定は https://discord.com/api/v10 */
   DISCORD_API_BASE?: string;
+  /** 分析用の保管庫（R2、任意）。ARCHIVE_TOKEN は読み出し API の合言葉で、設定したときだけ API が有効になる。 */
+  ARCHIVE?: R2Bucket;
+  ARCHIVE_TOKEN?: string;
 }
 
 /** player_matches の列。順序は INSERT とスキーマの両方で使う。 */
@@ -135,8 +138,14 @@ const DDL_V9 = [
   `DELETE FROM match_raw WHERE match_id IN (SELECT match_id FROM matches WHERE queue NOT IN (${RAW_QUEUES.map((q) => `'${q}'`).join(", ")}))`,
 ];
 
+const DDL_V10 = [
+  // 分析用の保管庫（R2）へ書き出したか。取り込み直すと 0 に戻り、書き出し直される
+  `ALTER TABLE matches ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`,
+  `CREATE INDEX IF NOT EXISTS matches_unarchived ON matches (match_id) WHERE archived = 0`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10];
 
 let ready: Promise<void> | null = null;
 

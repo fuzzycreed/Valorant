@@ -1,4 +1,5 @@
 import { ensureSchema, ingestStatements, type Env } from "./db";
+import { archiveStep } from "./archive";
 import { gunzip, gzip } from "./gz";
 import { queueRecentMatches } from "./roster";
 import { Henrik, HenrikError } from "./henrik";
@@ -317,12 +318,15 @@ export async function syncStep(
   out.pending = row?.n ?? 0;
   out.focusPending = row?.mine ?? 0;
   await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)`).bind(String(Date.now())).run();
+  // 取り込んだ試合の集計結果を、分析用の保管庫（R2）へ少しずつ書き出す
+  await archiveStep(env, ARCHIVE_PER_STEP).catch((e) => console.warn("archive failed", e));
   // 試合を取り込まなかった回にだけ、未圧縮の生データを少しずつ圧縮する（処理の最後に置き、失敗しても同期には響かせない）
   if (!out.processed && !out.rateLimited) await compactRaw(env, COMPACT_PER_STEP).catch((e) => console.warn("compact failed", e));
   return out;
 }
 
 const COMPACT_PER_STEP = 2;
+const ARCHIVE_PER_STEP = 6;
 
 /** 未圧縮の生データを gzip で圧縮し直す。圧縮した件数を返す。 */
 export async function compactRaw(env: Env, limit: number): Promise<number> {

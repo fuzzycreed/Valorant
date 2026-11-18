@@ -6,6 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "sync:local": "tsx scripts/sync-local.ts",
+    "archive": "tsx scripts/archive.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
