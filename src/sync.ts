@@ -281,6 +281,9 @@ export async function syncStep(
       await refreshRanks(env, api, [l]);
     }
 
+    // 収集対象: 確認が古い順に数人ずつ、直近の試合を取り込み待ちに積む（保管庫が無い環境では何もしない）
+    if (env.ARCHIVE) out.discovered += await trackStep(env, api, now);
+
     const { results } = await env.DB.prepare(
       `SELECT match_id, region, attempts, keep_raw FROM match_queue WHERE status = 'pending'
        ORDER BY (puuid = ?) DESC, started_at DESC LIMIT ?`,
@@ -320,9 +323,94 @@ export async function syncStep(
   await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)`).bind(String(Date.now())).run();
   // 取り込んだ試合の集計結果を、分析用の保管庫（R2）へ少しずつ書き出す
   await archiveStep(env, ARCHIVE_PER_STEP).catch((e) => console.warn("archive failed", e));
+  if (out.processed) await autoTrack(env, now).catch((e) => console.warn("auto track failed", e));
+  await pruneTracked(env, now).catch((e) => console.warn("prune failed", e));
   // 試合を取り込まなかった回にだけ、未圧縮の生データを少しずつ圧縮する（処理の最後に置き、失敗しても同期には響かせない）
   if (!out.processed && !out.rateLimited) await compactRaw(env, COMPACT_PER_STEP).catch((e) => console.warn("compact failed", e));
   return out;
+}
+
+/** 収集対象を1回の同期で何人確認するか、同じ人を次に確認するまでの間隔、人数の上限。 */
+const TRACK_PER_STEP = 2;
+const TRACK_INTERVAL_MS = 3 * 60 * 60 * 1000;
+export const TRACK_MAX = 400;
+/** 収集対象だけが出ている試合を D1 に残す期間（保管庫へ書き出し済みのものに限って消す）。 */
+const TRACK_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+const PRUNE_PER_RUN = 40;
+
+/** 収集対象の直近20試合を見て、未取得の試合（デスマッチなどを除く）を取り込み待ちに積む。 */
+async function trackStep(env: Env, api: Henrik, now: number): Promise<number> {
+  const { results } = await env.DB.prepare(
+    `SELECT puuid, region FROM tracked WHERE checked_at < ? AND puuid NOT IN (SELECT puuid FROM players WHERE source = 'config')
+     ORDER BY checked_at LIMIT ?`,
+  )
+    .bind(now - TRACK_INTERVAL_MS, TRACK_PER_STEP)
+    .all<{ puuid: string; region: string }>();
+  let queued = 0;
+  for (const t of results) {
+    let found: { id: string; t: number; q: string | null }[] = [];
+    try {
+      const h = (await api.matchHistory(t.region, t.puuid, 0, HISTORY_PAGE)).data;
+      found = (h?.History ?? [])
+        .filter((e: any) => !SKIP_QUEUES.has(e.QueueID))
+        .map((e: any) => ({ id: e.MatchID, t: e.GameStartTime ?? 0, q: e.QueueID ?? null }));
+    } catch (e) {
+      // その人だけの失敗（長期間プレイなし等）は、確認済みにして先へ進む
+      if (!(e instanceof HenrikError) || e.status === 429) throw e;
+    }
+    const res = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO match_queue (match_id, region, started_at, queue, updated_at, puuid, keep_raw)
+         SELECT json_extract(value, '$.id'), ?1, json_extract(value, '$.t'), json_extract(value, '$.q'), ?2, ?4, 0 FROM json_each(?3)`,
+      ).bind(t.region, now, JSON.stringify(found), t.puuid),
+      env.DB.prepare(`UPDATE tracked SET checked_at = ? WHERE puuid = ?`).bind(now, t.puuid),
+    ]);
+    queued += res[0]?.meta?.changes ?? 0;
+  }
+  return queued;
+}
+
+/** 本人や登録者が出た 5vs5 カスタムの参加者を、収集対象に自動で加える（上限あり）。 */
+async function autoTrack(env: Env, now: number): Promise<void> {
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO tracked (puuid, name, tag, region, added_at, origin)
+     SELECT p.puuid, p.name, p.tag, ?1, ?2, 'custom' FROM player_matches p
+     WHERE p.queue = 'custom5v5' AND p.started_at > ?3
+       AND p.match_id IN (SELECT match_id FROM player_matches WHERE queue = 'custom5v5' AND started_at > ?3
+                          AND (puuid IN (SELECT puuid FROM players WHERE source = 'config') OR puuid IN (SELECT puuid FROM discord_links)))
+       AND p.puuid NOT IN (SELECT puuid FROM players WHERE source = 'config')
+       AND (SELECT COUNT(*) FROM tracked) < ?4
+     GROUP BY p.puuid LIMIT 20`,
+  )
+    .bind(env.REGION, now, now - 3 * 24 * 60 * 60 * 1000, TRACK_MAX)
+    .run();
+}
+
+/**
+ * 収集対象だけが出ている古い試合を D1 から消す（1時間に1回、少しずつ）。
+ * 保管庫へ書き出し済みで、本人・検索された人・登録者が1人も出ていない試合に限る。取り込み待ちの記録は残すので、取り直しは起きない。
+ */
+async function pruneTracked(env: Env, now: number): Promise<number> {
+  if (!env.ARCHIVE) return 0;
+  const last = await env.DB.prepare(`SELECT value FROM meta WHERE key = 'last_prune'`).first<{ value: string }>();
+  if (now - Number(last?.value ?? 0) < PRUNE_INTERVAL_MS) return 0;
+  const { results } = await env.DB.prepare(
+    `SELECT m.match_id FROM matches m WHERE m.archived = 1 AND m.started_at < ?
+       AND NOT EXISTS (SELECT 1 FROM player_matches p WHERE p.match_id = m.match_id
+                       AND (p.puuid IN (SELECT puuid FROM players) OR p.puuid IN (SELECT puuid FROM discord_links)))
+     LIMIT ?`,
+  )
+    .bind(now - TRACK_KEEP_MS, PRUNE_PER_RUN)
+    .all<{ match_id: string }>();
+  const ids = JSON.stringify(results.map((r) => r.match_id));
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM player_matches WHERE match_id IN (SELECT value FROM json_each(?))`).bind(ids),
+    env.DB.prepare(`DELETE FROM match_raw WHERE match_id IN (SELECT value FROM json_each(?))`).bind(ids),
+    env.DB.prepare(`DELETE FROM matches WHERE match_id IN (SELECT value FROM json_each(?))`).bind(ids),
+    env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('last_prune', ?)`).bind(String(now)),
+  ]);
+  return results.length;
 }
 
 const COMPACT_PER_STEP = 2;

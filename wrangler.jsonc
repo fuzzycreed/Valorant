@@ -13,7 +13,7 @@
   "d1_databases": [{ "binding": "DB", "database_name": "valorant-stats" }],
   // 分析用の保管庫。バケットが無ければ、デプロイ時に wrangler がこの名前で作成する（R2 を有効にしてあること）
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "valorant-stats-archive" }],
-  "triggers": { "crons": ["*/10 * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     // 追跡する Riot ID（カンマ区切りで複数可）
     "RIOT_IDS": "cinder#qshen,Thou Shalt Die#srymb,Cadd9th#chord,タピオカに課税#TAX,GoodLuckHaveFun#SRYMB,Sorrymybad#GLHF,ashen#713,蜈ｨ驛ｨ菫ｺ縺梧が縺#閾ｪ雋ｬ",

@@ -144,8 +144,17 @@ const DDL_V10 = [
   `CREATE INDEX IF NOT EXISTS matches_unarchived ON matches (match_id) WHERE archived = 0`,
 ];
 
+const DDL_V11 = [
+  // 収集対象: サイトには出さず、試合を拾い続けるだけの人（一緒に組んだ人・カスタムで同席した人など）。
+  // 拾った試合は保管庫（R2）へ書き出したあと、一定期間で D1 から消す
+  `CREATE TABLE IF NOT EXISTS tracked (
+     puuid TEXT PRIMARY KEY, name TEXT, tag TEXT, region TEXT NOT NULL DEFAULT 'ap',
+     added_at INTEGER, checked_at INTEGER NOT NULL DEFAULT 0, origin TEXT)`,
+  `CREATE INDEX IF NOT EXISTS tracked_checked ON tracked (checked_at)`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11];
 
 let ready: Promise<void> | null = null;
 

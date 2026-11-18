@@ -63,6 +63,8 @@ async function sameToken(given: string, expected: string): Promise<boolean> {
 }
 
 const BATCH_MAX = 25;
+/** 収集対象の人数の上限（sync.ts の TRACK_MAX と同じ値）。 */
+const TRACK_LIMIT = 400;
 const PUT_MAX_BYTES = 5_000_000;
 const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,200}$/;
 
@@ -72,6 +74,7 @@ const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,200}$/;
  *   GET  get?key=                      1ファイルをそのまま返す
  *   POST batch  {"keys":[...]}         最大25ファイルを、1行1ファイルの NDJSON（{"key","body"}）で返す
  *   PUT  put?key=crawl/...             分析側が集めたデータを置く（crawl/ の下だけ）
+ *   GET/POST track                     収集対象（試合を拾い続ける人）の一覧・追加（{"players":[{puuid,name,tag}]}）
  */
 export async function handleArchive(req: Request, env: Env, url: URL): Promise<Response> {
   const bucket = env.ARCHIVE;
@@ -105,6 +108,26 @@ export async function handleArchive(req: Request, env: Env, url: URL): Promise<R
       }),
     );
     return new Response(lines.join("\n") + "\n", { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+  if (action === "track") {
+    if (req.method === "POST") {
+      const players = ((await req.json().catch(() => null)) as { players?: unknown } | null)?.players;
+      const ok = Array.isArray(players) && players.length <= 200 && players.every((p) => typeof p?.puuid === "string" && /^[0-9a-f-]{36}$/.test(p.puuid));
+      if (!ok) return json({ error: "players は {puuid, name, tag} の配列（200件まで）で指定してください" }, 400);
+      const now = Date.now();
+      const res = await env.DB.prepare(
+        `INSERT OR IGNORE INTO tracked (puuid, name, tag, region, added_at, origin)
+         SELECT json_extract(value, '$.puuid'), json_extract(value, '$.name'), json_extract(value, '$.tag'), ?2, ?3, 'manual' FROM json_each(?1)
+         WHERE (SELECT COUNT(*) FROM tracked) < ?4`,
+      )
+        .bind(JSON.stringify(players), env.REGION, now, TRACK_LIMIT)
+        .run();
+      return json({ added: res.meta.changes ?? 0 });
+    }
+    if (req.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT puuid, name, tag, origin, added_at, checked_at FROM tracked ORDER BY added_at`).all();
+      return json({ count: results.length, limit: TRACK_LIMIT, players: results });
+    }
   }
   if (req.method === "PUT" && action === "put") {
     const key = q.get("key") ?? "";
