@@ -86,20 +86,20 @@ export function rerollOptions(splits: Split[]): Split[] {
 }
 
 // ---------- 成績と実力の関係（実測値） ----------
-// 本人と、一緒に組んだ人・カスタムで同席した人のコンペ429試合・のべ4290人分から求めた値。データが増えたら見直す。
+// コンペ1,669試合・のべ16,252人分（本人、一緒に組んだ人、同じ試合にいた人をランク帯が偏らないように集めたもの）から求めた値。
 
 /** 試合内の10人平均を 1.00 としたときの、ロールごとの平均 ACS（ランク差の影響を除いた値）。デュエリストは高く、イニシエーターは低く出る。 */
-export const ROLE_ACS: Record<Role, number> = { duelist: 1.05, initiator: 0.89, controller: 1.03, sentinel: 0.98 };
+export const ROLE_ACS: Record<Role, number> = { duelist: 1.05, initiator: 0.89, controller: 1.04, sentinel: 0.98 };
 /**
- * 同じロールでも、エージェントによって ACS の出やすさが違う（例: デュエリストでもレイナ 1.11、ウェイレイ 0.98）。
+ * 同じロールでも、エージェントによって ACS の出やすさが違う（例: デュエリストでもレイナ 1.10、ネオン 1.00）。
  * 30件以上のデータがあるエージェントだけ個別の値を持ち、それ以外はロールの平均を使う。
  * 値はランク差の影響を除き、件数が少ないものほどロール平均へ寄せてある。
  */
 export const AGENT_ACS: Record<string, number> = {
-  reyna: 1.11, iso: 1.1, phoenix: 1.09, jett: 1.06, raze: 1.04, yoru: 1.02, hush: 1.01, neon: 1.0, waylay: 0.98,
-  breach: 0.9, sova: 0.89, skye: 0.89, fade: 0.87,
-  clove: 1.07, astra: 1.0, miks: 0.99, omen: 0.98, brimstone: 0.98,
-  chamber: 1.04, vyse: 1.0, sage: 0.97, cypher: 0.94, killjoy: 0.94,
+  iso: 1.1, reyna: 1.1, phoenix: 1.08, jett: 1.07, yoru: 1.02, raze: 1.01, waylay: 1.0, hush: 1.0, neon: 1.0,
+  "kay/o": 0.94, breach: 0.93, tejo: 0.93, gekko: 0.91, sova: 0.89, fade: 0.87, skye: 0.86,
+  clove: 1.08, harbor: 1.07, astra: 0.99, miks: 0.98, brimstone: 0.97, omen: 0.97,
+  chamber: 1.03, vyse: 0.98, killjoy: 0.98, veto: 0.98, deadlock: 0.97, cypher: 0.94, sage: 0.93,
 };
 /** その試合で使ったエージェント（無ければロール）から見込まれる、平均的な ACS 比。 */
 export function acsBaseline(agent: string | null | undefined, role: Role | null): number {

@@ -108,8 +108,8 @@ describe("summarizeRr / rrShift", () => {
   });
   it("差し引きがプラスなら土台を上げ、試合数が少ないほど弱め、上限で止める", () => {
     expect(rrShift({ w: 18, l: -18, n: 20 })).toBe(0);
-    expect(rrShift({ w: 28, l: -8, n: 12 })).toBe(180); // 20 × 15 × 12/20
-    expect(rrShift({ w: 15, l: -21, n: 8 })).toBe(-45); // -6 × 15 × 8/16
+    expect(rrShift({ w: 24, l: -16, n: 12 })).toBe(150); // 8 × 25 × 12/16
+    expect(rrShift({ w: 15, l: -21, n: 8 })).toBe(-100); // -6 × 25 × 8/12
     expect(rrShift({ w: 40, l: -5, n: 20 })).toBe(300);
     expect(rrShift(null)).toBe(0);
   });

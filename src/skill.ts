@@ -115,7 +115,7 @@ export function blendBase(current: number | null, proven: number | null, games: 
 //
 // VALORANT は、内部レートがランクより高い人には勝ちで多く・負けで少なく RR を動かす。
 // 直近の「勝ちの平均」と「負けの平均」を足した値（差し引き）がプラスなら、実力はランクより上にある。
-// 実測（36人）: 差し引き +20 の人はランクより約350点上、-7 の人は約450点下の成績だった。
+// 実測（173人）: 差し引き +7 の人はランクより約170点上、-7 の人は約190点下の成績で、ほぼ直線（1 あたり約23点）。
 
 /** 直近のコンペでの RR の動き。w は勝ち試合の平均、l は負け試合の平均（マイナス）、n は数えた試合数。 */
 export interface RrTrend {
@@ -129,9 +129,9 @@ export const RR_MATCHES = 20;
 /** 勝ち・負けそれぞれ、これだけの試合が無ければ使わない。 */
 export const RR_MIN_EACH = 2;
 /** 差し引き 1 を、レート何点ぶんのずれとして扱うか。 */
-export const RR_POINTS = 15;
+export const RR_POINTS = 25;
 /** 試合数が少ないうちは弱める。n 試合なら n / (n + この値) 倍。 */
-export const RR_SHRINK = 8;
+export const RR_SHRINK = 4;
 export const RR_CAP = 300;
 
 /** HenrikDev の mmr-history から、直近の RR の動きをまとめる。使えるだけの試合が無ければ null。 */

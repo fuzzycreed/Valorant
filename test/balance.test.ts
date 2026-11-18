@@ -92,13 +92,14 @@ describe("perfAdjustment", () => {
   });
   it("エージェントごとの平均が分かっていれば、ロールの平均より優先する", () => {
     expect(acsBaseline("Reyna", "duelist")).toBe(AGENT_ACS.reyna);
-    expect(acsBaseline("KAY/O", "initiator")).toBe(ROLE_ACS.initiator); // データが少ないエージェントはロール平均
+    expect(acsBaseline("KAY/O", "initiator")).toBe(AGENT_ACS["kay/o"]);
+    expect(acsBaseline("Viper", "controller")).toBe(ROLE_ACS.controller); // データが少ないエージェントはロール平均
     expect(acsBaseline(null, null)).toBe(1);
-    // 同じデュエリストで同じ ACS でも、稼ぎやすいレイナより、稼ぎにくいウェイレイのほうが高く評価される
+    // 同じデュエリストで同じ ACS でも、稼ぎやすいレイナより、稼ぎにくいネオンのほうが高く評価される
     const reyna = perfAdjustment(many({ ratio: 1.05, role: "duelist", agent: "Reyna", lobbyElo: 1500 }, 20), 1500);
-    const waylay = perfAdjustment(many({ ratio: 1.05, role: "duelist", agent: "Waylay", lobbyElo: 1500 }, 20), 1500);
+    const neon = perfAdjustment(many({ ratio: 1.05, role: "duelist", agent: "Neon", lobbyElo: 1500 }, 20), 1500);
     expect(reyna).toBeLessThan(0);
-    expect(waylay).toBeGreaterThan(0);
+    expect(neon).toBeGreaterThan(0);
   });
   it("格下相手に稼いだぶんは補正に入らない", () => {
     // 200点下のランク帯で、その差から見込まれるとおりの成績
