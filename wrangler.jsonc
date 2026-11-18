@@ -14,7 +14,7 @@
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
     // 追跡する Riot ID（カンマ区切りで複数可）
-    "RIOT_IDS": "cinder#qshen,Thou Shalt Die#srymb,Cadd9th#chord,タピオカに課税#TAX,GoodLuckHaveFun#SRYMB,Sorrymybad#GLHF,ashen#713",
+    "RIOT_IDS": "cinder#qshen,Thou Shalt Die#srymb,Cadd9th#chord,タピオカに課税#TAX,GoodLuckHaveFun#SRYMB,Sorrymybad#GLHF,ashen#713,蜈ｨ驛ｨ菫ｺ縺梧が縺#閾ｪ雋ｬ",
     "REGION": "ap",
     "PLATFORM": "pc"
   },
