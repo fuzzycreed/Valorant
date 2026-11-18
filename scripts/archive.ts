@@ -85,7 +85,7 @@ export async function push(db: D1Database, call: Call): Promise<number> {
   const remote = new Set((await listKeys(call, "matches/")).map((k) => k.replace(/^.*\//, "").replace(/\.json$/, "")));
   for (const key of await listKeys(call, "crawl/")) {
     const body = (await (await ok(await call(`get?key=${encodeURIComponent(key)}`))).json()) as MatchFile | MatchFile[];
-    for (const f of Array.isArray(body) ? body : [body]) remote.add(f.match.match_id as string);
+    for (const f of Array.isArray(body) ? body : [body]) if (f?.match?.match_id) remote.add(f.match.match_id as string);
   }
   const ids = (await db.prepare(`SELECT match_id FROM matches ORDER BY match_id`).all<{ match_id: string }>()).results.map((r) => r.match_id).filter((id) => !remote.has(id));
   const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
