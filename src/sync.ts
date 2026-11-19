@@ -286,7 +286,7 @@ export async function syncStep(
 
     const { results } = await env.DB.prepare(
       `SELECT match_id, region, attempts, keep_raw FROM match_queue WHERE status = 'pending'
-       ORDER BY (puuid = ?) DESC, started_at DESC LIMIT ?`,
+       ORDER BY (puuid = ?) DESC, keep_raw DESC, (queue = '') DESC, started_at DESC LIMIT ?`,
     )
       .bind(focus, opts.maxMatches ?? 2)
       .all<{ match_id: string; region: string; attempts: number; keep_raw: number }>();

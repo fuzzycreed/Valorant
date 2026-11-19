@@ -74,6 +74,7 @@ const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,200}$/;
  *   GET  get?key=                      1ファイルをそのまま返す
  *   POST batch  {"keys":[...]}         最大25ファイルを、1行1ファイルの NDJSON（{"key","body"}）で返す
  *   PUT  put?key=crawl/...             分析側が集めたデータを置く（crawl/ の下だけ）
+ *   GET  errors                        取り込みに失敗して止まっている試合の一覧
  *   GET/POST track                     収集対象（試合を拾い続ける人）の一覧・追加（{"players":[{puuid,name,tag}]}）
  */
 export async function handleArchive(req: Request, env: Env, url: URL): Promise<Response> {
@@ -128,6 +129,13 @@ export async function handleArchive(req: Request, env: Env, url: URL): Promise<R
       const { results } = await env.DB.prepare(`SELECT puuid, name, tag, origin, added_at, checked_at FROM tracked ORDER BY added_at`).all();
       return json({ count: results.length, limit: TRACK_LIMIT, players: results });
     }
+  }
+  if (req.method === "GET" && action === "errors") {
+    // 取り込みに失敗して止まっている試合（原因の確認用）
+    const { results } = await env.DB.prepare(
+      `SELECT match_id, queue, started_at, attempts, error, updated_at FROM match_queue WHERE status = 'error' ORDER BY updated_at DESC LIMIT 100`,
+    ).all();
+    return json({ errors: results });
   }
   if (req.method === "PUT" && action === "put") {
     const key = q.get("key") ?? "";
