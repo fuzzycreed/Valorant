@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acsBaseline, ACS_PER_POINT, AGENT_ACS, balance, EXPECTED_FLOOR, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
+import { acsBaseline, ACS_PER_POINT, AGENT_ACS, applyPairs, balance, EXPECTED_FLOOR, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
 
 const P = (id: string, rating: number, role: Candidate["role"] = null): Candidate => ({ id, rating, role });
 
@@ -78,6 +78,39 @@ describe("impact", () => {
   });
 });
 
+describe("applyPairs", () => {
+  const players = [1500, 1450, 1400, 1380, 1350, 1320, 1300, 1250, 1200, 1100].map((r, i) => P(`p${i}`, r));
+  const together = (s: { a: string[]; b: string[] }, x: string, y: string) => s.a.includes(x) === s.a.includes(y);
+  it("同じチームにしたい2人・分けたい2人を満たす案だけに絞る", () => {
+    const r = applyPairs(balance(players), [{ a: "p0", b: "p1", mode: "together" }, { a: "p2", b: "p3", mode: "apart" }]);
+    expect(r.satisfied).toBe(true);
+    expect(r.splits.length).toBeGreaterThan(0);
+    expect(r.splits.length).toBeLessThan(126);
+    for (const s of r.splits) {
+      expect(together(s, "p0", "p1")).toBe(true);
+      expect(together(s, "p2", "p3")).toBe(false);
+    }
+    // 絞ったあとも、釣り合いの良い順に並んでいる
+    for (const s of r.splits) expect(s.cost).toBeGreaterThanOrEqual(r.splits[0].cost);
+  });
+  it("その場にいない人を含む指定は無視する", () => {
+    const r = applyPairs(balance(players), [{ a: "p0", b: "nobody", mode: "apart" }]);
+    expect(r.satisfied).toBe(true);
+    expect(r.splits).toHaveLength(126);
+  });
+  it("すべてを満たす分け方が無ければ、絞らずに返して知らせる", () => {
+    // 3人を互いに別のチームにはできない
+    const r = applyPairs(balance(players), [
+      { a: "p0", b: "p1", mode: "apart" }, { a: "p1", b: "p2", mode: "apart" }, { a: "p0", b: "p2", mode: "apart" },
+    ]);
+    expect(r.satisfied).toBe(false);
+    expect(r.splits).toHaveLength(126);
+  });
+  it("指定が無ければ何もしない", () => {
+    expect(applyPairs(balance(players), [])).toEqual({ splits: balance(players), satisfied: true });
+  });
+});
+
 describe("perfAdjustment", () => {
   const many = (s: PerfSample, n: number) => Array.from({ length: n }, () => s);
   it("同格の相手に、ロール平均どおりの成績なら補正なし", () => {
@@ -93,7 +126,7 @@ describe("perfAdjustment", () => {
   it("エージェントごとの平均が分かっていれば、ロールの平均より優先する", () => {
     expect(acsBaseline("Reyna", "duelist")).toBe(AGENT_ACS.reyna);
     expect(acsBaseline("KAY/O", "initiator")).toBe(AGENT_ACS["kay/o"]);
-    expect(acsBaseline("Viper", "controller")).toBe(ROLE_ACS.controller); // データが少ないエージェントはロール平均
+    expect(acsBaseline("NewAgent", "controller")).toBe(ROLE_ACS.controller); // 表に無いエージェントはロールの値
     expect(acsBaseline(null, null)).toBe(1);
     // 同じデュエリストで同じ ACS でも、稼ぎやすいレイナより、稼ぎにくいネオンのほうが高く評価される
     const reyna = perfAdjustment(many({ ratio: 1.05, role: "duelist", agent: "Reyna", lobbyElo: 1500 }, 20), 1500);

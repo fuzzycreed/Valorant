@@ -1,7 +1,7 @@
 // ウェブ版のチーム分け API。Discord を使わずに、サイト上で参加者を選んでチームを分ける。
 
 import { ROLE_LABEL, type Role } from "./agents";
-import { balance, rerollOptions } from "./balance";
+import { balance, rerollOptions, applyPairs, type Pair } from "./balance";
 import { ensureSchema, type Env } from "./db";
 import { Henrik } from "./henrik";
 import { isStale, ratePlayers, refreshRanks, type Link, type Rated } from "./rating";
@@ -106,9 +106,10 @@ async function removePlayer(env: Env, puuid: string) {
 }
 
 const ROLES = new Set(Object.keys(ROLE_LABEL));
+const MAX_PAIRS = 20;
 
 async function split(req: Request, env: Env) {
-  const body = (await req.json().catch(() => null)) as { ids?: unknown; guests?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { ids?: unknown; guests?: unknown; pairs?: unknown } | null;
   const ids = Array.isArray(body?.ids) ? [...new Set(body!.ids.filter((x): x is string => typeof x === "string"))] : [];
   const guestsIn = Array.isArray(body?.guests) ? (body!.guests as any[]) : [];
   if (ids.length + guestsIn.length < 2) return fail(400, "チーム分けには2人以上が必要です。");
@@ -140,9 +141,17 @@ async function split(req: Request, env: Env) {
   });
 
   const everyone = [...players, ...guests];
-  const options = rerollOptions(balance(everyone.map((p) => ({ id: p.id, rating: p.rating, role: p.role }))));
+  // ペアの指定（同じチームに / 別のチームに）。id は登録者の puuid か、ゲストの guest:<番号>
+  const pairs: Pair[] = (Array.isArray(body?.pairs) ? (body!.pairs as any[]) : [])
+    .filter((p) => typeof p?.a === "string" && typeof p?.b === "string" && (p.mode === "together" || p.mode === "apart"))
+    .slice(0, MAX_PAIRS)
+    .map((p) => ({ a: p.a, b: p.b, mode: p.mode }));
+  const filtered = applyPairs(balance(everyone.map((p) => ({ id: p.id, rating: p.rating, role: p.role }))), pairs);
+  const options = rerollOptions(filtered.splits);
   return json({
     players: everyone,
+    // 指定をすべて満たす分け方が無かった場合は false（指定なしで分けている）
+    pairsSatisfied: filtered.satisfied,
     options: options.map((o) => ({ a: o.a, b: o.b, diff: Math.round(o.diff), sumDiff: Math.round(o.sumDiff) })),
     maps: await recentMaps(env),
   });

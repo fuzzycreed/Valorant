@@ -153,8 +153,13 @@ const DDL_V11 = [
   `CREATE INDEX IF NOT EXISTS tracked_checked ON tracked (checked_at)`,
 ];
 
+const DDL_V12 = [
+  // 募集ごとのペアの指定（balance.ts の Pair の配列を JSON で保存。a・b は Discord のユーザーID）
+  `ALTER TABLE lobbies ADD COLUMN pairs TEXT`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12];
 
 let ready: Promise<void> | null = null;
 

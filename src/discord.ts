@@ -1,14 +1,14 @@
 // Discord のチーム分け bot。常駐プロセスを持たず、Discord からの HTTP 呼び出し（Interactions）だけで動く。
 
 import { ROLE_LABEL } from "./agents";
-import { balance, rerollOptions } from "./balance";
+import { balance, rerollOptions, applyPairs, type Pair } from "./balance";
 import { ensureSchema, type Env } from "./db";
 import { Henrik } from "./henrik";
 import { isStale, ratePlayers, refreshRanks, type Link, type Rated } from "./rating";
 import { findAccount, recentMaps, saveLink, WEB_PREFIX } from "./roster";
 import { tierName } from "./tiers";
 
-const COMMANDS_VERSION = "1";
+const COMMANDS_VERSION = "2";
 const MAX_MEMBERS = 10;
 const EPHEMERAL = 64;
 const COLOR = 0x3987e5;
@@ -22,6 +22,22 @@ const COMMANDS = [
   { name: "unlink", description: "Riot ID の登録を解除する" },
   { name: "rating", description: "チーム分けに使われる自分のレートを確認する" },
   { name: "custom", description: "カスタムの参加者を募集して、釣り合うようにチーム分けする" },
+  {
+    name: "pair",
+    description: "このチャンネルの最新の募集で、2人を同じチーム／別のチームに指定する",
+    options: [
+      {
+        type: 3, name: "mode", description: "指定の種類", required: true,
+        choices: [
+          { name: "同じチームにする", value: "together" },
+          { name: "別のチームにする", value: "apart" },
+          { name: "指定をすべて消す", value: "clear" },
+        ],
+      },
+      { type: 6, name: "user1", description: "1人目", required: false },
+      { type: 6, name: "user2", description: "2人目", required: false },
+    ],
+  },
 ].map((c) => ({ ...c, type: 1, integration_types: [0], contexts: [0] }));
 
 interface Lobby {
@@ -31,7 +47,20 @@ interface Lobby {
   variant: number;
   map: string | null;
   flip: number;
+  /** ペアの指定（Pair の配列の JSON）。未指定なら null */
+  pairs?: string | null;
 }
+
+const MAX_LOBBY_PAIRS = 10;
+function lobbyPairs(lobby: Lobby): Pair[] {
+  try {
+    const v = JSON.parse(lobby.pairs ?? "[]");
+    return Array.isArray(v) ? v.filter((p) => typeof p?.a === "string" && typeof p?.b === "string" && (p.mode === "together" || p.mode === "apart")) : [];
+  } catch {
+    return [];
+  }
+}
+const pairText = (p: Pair) => `<@${p.a}> と <@${p.b}> を${p.mode === "together" ? "同じチームに" : "別のチームに"}`;
 
 const apiBase = (env: Env) => env.DISCORD_API_BASE || "https://discord.com/api/v10";
 const json = (data: unknown, status = 200) =>
@@ -168,7 +197,11 @@ function lobbyMessage(lobby: Lobby, rated: Rated[]) {
 }
 
 function splitMessage(lobby: Lobby, rated: Rated[]) {
-  const options = rerollOptions(balance(rated.map((r) => ({ id: r.userId, rating: r.rating, role: r.role }))));
+  // ペアの指定は、参加者どうしのものだけ使う
+  const present = new Set(rated.map((r) => r.userId));
+  const pairs = lobbyPairs(lobby).filter((p) => present.has(p.a) && present.has(p.b));
+  const filtered = applyPairs(balance(rated.map((r) => ({ id: r.userId, rating: r.rating, role: r.role }))), pairs);
+  const options = rerollOptions(filtered.splits);
   const index = lobby.variant % options.length;
   const s = options[index];
   const byId = new Map(rated.map((r) => [r.userId, r]));
@@ -189,7 +222,10 @@ function splitMessage(lobby: Lobby, rated: Rated[]) {
           (lobby.map ? `マップ: **${lobby.map}**\n` : "") +
           (atk.length === def.length
             ? `戦力差（1人あたり）: **${Math.round(s.diff)}**`
-            : `人数が違うので、合計の戦力が釣り合うように分けています（合計の差: **${Math.round(s.sumDiff)}**）`),
+            : `人数が違うので、合計の戦力が釣り合うように分けています（合計の差: **${Math.round(s.sumDiff)}**）`) +
+          (pairs.length
+            ? "\n" + (filtered.satisfied ? `指定: ${pairs.map(pairText).join(" / ")}` : "⚠ ペアの指定をすべて満たす分け方が無いため、指定なしで分けています")
+            : ""),
         fields: [
           { name: `アタッカー側 ・ 平均 ${a.avg}`, value: a.value },
           { name: `ディフェンダー側 ・ 平均 ${d.avg}`, value: d.value },
@@ -286,6 +322,35 @@ async function command(env: Env, ctx: ExecutionContext, i: any, userId: string):
     return ephemeral(res[0].meta.changes ? "Riot ID の登録を解除しました。" : "登録されている Riot ID はありません。");
   }
   if (name === "rating") return ephemeral(await ratingText(env, userId));
+  if (name === "pair") {
+    const opt = (n: string) => i.data.options?.find((o: any) => o.name === n)?.value;
+    const mode = String(opt("mode") ?? "");
+    const lobby = await env.DB.prepare(`SELECT * FROM lobbies WHERE channel_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .bind(i.channel_id ?? i.channel?.id ?? "")
+      .first<Lobby>();
+    if (!lobby) return ephemeral("このチャンネルには募集がありません。先に `/custom` で募集を作ってください。");
+    const members = (await lobbyLinks(env, lobby.lobby_id)).map((l) => l.user_id);
+    if (userId !== lobby.host_id && !members.includes(userId)) return ephemeral("この操作は募集した人か参加者だけができます。");
+    let pairs = lobbyPairs(lobby);
+    if (mode === "clear") pairs = [];
+    else if (mode === "together" || mode === "apart") {
+      const a = String(opt("user1") ?? ""), b = String(opt("user2") ?? "");
+      if (!a || !b || a === b) return ephemeral("user1 と user2 に、別々の2人を指定してください。");
+      // 同じ2人への指定は、新しいもので置き換える
+      pairs = pairs.filter((p) => !((p.a === a && p.b === b) || (p.a === b && p.b === a)));
+      if (pairs.length >= MAX_LOBBY_PAIRS) return ephemeral(`指定できるのは ${MAX_LOBBY_PAIRS} 組までです。\`/pair mode:指定をすべて消す\` でやり直せます。`);
+      pairs.push({ a, b, mode });
+    } else return ephemeral("mode を選んでください。");
+    // 指定が変わったら、案は1番目からやり直す
+    await env.DB.prepare(`UPDATE lobbies SET pairs = ?, variant = 0 WHERE lobby_id = ?`).bind(pairs.length ? JSON.stringify(pairs) : null, lobby.lobby_id).run();
+    const absent = pairs.filter((p) => !members.includes(p.a) || !members.includes(p.b)).length;
+    return message({
+      content:
+        (pairs.length ? `ペアの指定（${pairs.length}組）:\n${pairs.map((p) => "・" + pairText(p)).join("\n")}` : "ペアの指定をすべて消しました。") +
+        (pairs.length ? "\n次の「チーム分け」「振り直し」から反映されます。" : "") +
+        (absent ? `\n（${absent}組は、2人とも募集に参加するまで使われません）` : ""),
+    });
+  }
   if (name === "custom") {
     const lobby: Lobby = { lobby_id: i.id, host_id: userId, state: "open", variant: 0, map: null, flip: 0 };
     const now = Date.now();

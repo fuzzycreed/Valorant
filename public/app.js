@@ -483,7 +483,7 @@ async function viewMatch(id) {
 // ---------- チーム分け ----------
 
 const ROLES = { duelist: "デュエリスト", initiator: "イニシエーター", controller: "コントローラー", sentinel: "センチネル" };
-const team = { players: [], maps: [], selected: new Set(), guests: [], result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
+const team = { players: [], maps: [], selected: new Set(), guests: [], pairs: [], result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
 /** まとめて追加できる人数の上限と、新規登録どうしの間隔（外部 API のレート制限に収めるため）。 */
 const TEAM_ADD_MAX = 20;
 const TEAM_ADD_GAP_MS = 6000;
@@ -491,10 +491,22 @@ try {
   const saved = JSON.parse(localStorage.getItem("team") ?? "{}");
   team.selected = new Set(saved.selected ?? []);
   team.guests = saved.guests ?? [];
+  team.pairs = Array.isArray(saved.pairs) ? saved.pairs : [];
 } catch {}
 const saveTeam = () => {
-  try { localStorage.setItem("team", JSON.stringify({ selected: [...team.selected], guests: team.guests })); } catch {}
+  try { localStorage.setItem("team", JSON.stringify({ selected: [...team.selected], guests: team.guests, pairs: team.pairs })); } catch {}
 };
+/** いま選ばれている参加者（登録者は puuid、ゲストは guest:<番号> が id）。ペアの指定に使う。 */
+const teamPeople = () => [
+  ...team.players.filter((p) => team.selected.has(p.id)).map((p) => ({ id: p.id, label: p.name + (p.tag ? "#" + p.tag : "") })),
+  ...team.guests.map((g, k) => ({ id: `guest:${k}`, label: `${g.name}（ゲスト）` })),
+];
+/** 参加者から外れた人を含む指定は消す。 */
+const prunePairs = () => {
+  const ids = new Set(teamPeople().map((p) => p.id));
+  team.pairs = team.pairs.filter((p) => ids.has(p.a) && ids.has(p.b));
+};
+const PAIR_MAX = 20;
 const teamRank = (p) =>
   p.guest ? tierName(p.tier) : p.tier == null ? (p.basis === "level" ? `ランクなし（Lv${p.level}）` : "ランクなし（仮）") : p.estimated ? `${tierName(p.tier)}（過去）` : `${tierName(p.tier)} ${p.rr ?? 0}RR`;
 /** レートの内訳（数字にカーソルを合わせたときに出す）。 */
@@ -527,6 +539,7 @@ function teamResultHtml() {
            <span>${esc(teamRank(p))} ・ ${esc(ROLES[p.role] ?? "ロール不明")} ・ ${p.rating}</span></li>`).join("")}</ul></div>`;
   };
   return `
+    ${r.pairsSatisfied === false ? `<p class="msg">ペアの指定をすべて満たす分け方がないため、指定なしで分けています。</p>` : ""}
     <p class="summary">${team.map ? `マップ: <b>${esc(team.map)}</b> ・ ` : ""}${atk.length === def.length
       ? `戦力差（1人あたり） <b>${o.diff}</b>`
       : `人数が違うので合計の戦力で釣り合わせています（合計の差 <b>${o.sumDiff}</b>）`}
@@ -554,6 +567,8 @@ function teamResultText() {
 
 function renderTeams() {
   const n = teamSize();
+  const people = teamPeople();
+  const labelOf = new Map(people.map((x) => [x.id, x.label]));
   $("#view").innerHTML = `
     <section class="grid">
       <div class="card c7">
@@ -589,6 +604,16 @@ function renderTeams() {
       <div class="card c5">
         <h2><span>チーム分け</span>
           <button type="button" class="btn primary" data-act="split"${n < 2 || n > 10 ? " disabled" : ""}>チーム分けする</button></h2>
+        ${people.length >= 2 ? `
+        <div class="sub">ペアの指定<small>同じチームにしたい2人・分けたい2人（指定を満たす分け方の中から選びます）</small></div>
+        <form class="formrow" id="team-pair">
+          <select name="a" aria-label="1人目">${people.map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join("")}</select>
+          <select name="b" aria-label="2人目">${people.map((x, k) => `<option value="${esc(x.id)}"${k === 1 ? " selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+          <select name="mode" aria-label="指定の種類"><option value="together">同じチームに</option><option value="apart">別のチームに</option></select>
+          <button class="btn"${team.pairs.length >= PAIR_MAX ? " disabled" : ""}>指定する</button>
+        </form>
+        ${team.pairs.length ? `<ul class="pairs">${team.pairs.map((x, k) => `<li><span>${esc(labelOf.get(x.a) ?? "?")} と ${esc(labelOf.get(x.b) ?? "?")} を<b>${x.mode === "together" ? "同じチームに" : "別のチームに"}</b></span>
+          <button type="button" class="btn small" data-act="pair-remove" data-k="${k}">削除</button></li>`).join("")}</ul>` : ""}` : ""}
         <div id="team-result">${teamResultHtml()}</div>
         <p class="muted" style="font-size:12px;margin:14px 0 0">レート = ランク（現在のランクと過去の実績から算出）＋ 直近の成績による補正（最大±300）。戦力差は、参加者の平均から大きく離れた人ほど強く効くものとして計算します。レートの数字にカーソルを合わせると内訳が出ます。追加した人の試合は順次取り込まれ、補正とロールに反映されます。</p>
       </div>
@@ -605,7 +630,7 @@ async function viewTeams() {
   renderTeams();
 }
 
-const changed = () => { team.result = null; saveTeam(); renderTeams(); };
+const changed = () => { team.result = null; prunePairs(); saveTeam(); renderTeams(); };
 
 /** 入力欄の文字列を Riot ID の一覧にする。改行・カンマ・読点で区切り、重複は除く（名前には空白を含められる）。 */
 function parseRiotIds(text) {
@@ -668,6 +693,15 @@ $("#view").addEventListener("submit", async (e) => {
     if (!name || teamSize() >= 10) return;
     team.guests.push({ name, tier: Number(form.tier.value), role: form.role.value });
     changed();
+  } else if (form.id === "team-pair") {
+    e.preventDefault();
+    const a = form.a.value, b = form.b.value, mode = form.mode.value;
+    if (!a || !b || a === b) { team.msg = "ペアの指定は、別々の2人を選んでください。"; return renderTeams(); }
+    // 同じ2人への指定は、新しいもので置き換える
+    team.pairs = team.pairs.filter((x) => !((x.a === a && x.b === b) || (x.a === b && x.b === a)));
+    if (team.pairs.length < PAIR_MAX) team.pairs.push({ a, b, mode });
+    team.msg = "";
+    changed();
   }
 });
 
@@ -694,13 +728,21 @@ $("#view").addEventListener("click", async (e) => {
     return changed();
   }
   if (act === "guest-remove") {
-    team.guests.splice(Number(e.target.dataset.k), 1);
+    const k = Number(e.target.dataset.k);
+    team.guests.splice(k, 1);
+    // ゲストの id は並び順なので、消した人を含む指定を外し、後ろの人の番号を詰める
+    const shift = (id) => (id.startsWith("guest:") && Number(id.slice(6)) > k ? `guest:${Number(id.slice(6)) - 1}` : id);
+    team.pairs = team.pairs.filter((x) => x.a !== `guest:${k}` && x.b !== `guest:${k}`).map((x) => ({ ...x, a: shift(x.a), b: shift(x.b) }));
+    return changed();
+  }
+  if (act === "pair-remove") {
+    team.pairs.splice(Number(e.target.dataset.k), 1);
     return changed();
   }
   if (act === "split") {
     e.target.disabled = true;
     try {
-      team.result = await api("/team/split", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...team.selected], guests: team.guests }) });
+      team.result = await api("/team/split", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...team.selected], guests: team.guests, pairs: team.pairs }) });
       team.variant = 0;
       team.flip = Math.random() < 0.5 ? 1 : 0;
       team.maps = team.result.maps;

@@ -78,6 +78,30 @@ export function balance(players: Candidate[]): Split[] {
   return out.sort((x, y) => x.cost - y.cost);
 }
 
+/** 「この2人は同じチームに」「この2人は別のチームに」という指定。 */
+export interface Pair {
+  a: string;
+  b: string;
+  mode: "together" | "apart";
+}
+
+/**
+ * ペアの指定を満たす分け方だけに絞る。点数で釣り合いを崩すのではなく、満たさない案を候補から外す。
+ * その場にいない人を含む指定は無視する。すべてを満たす分け方が1つも無ければ、絞らずに返す（satisfied が false）。
+ */
+export function applyPairs(splits: Split[], pairs: Pair[]): { splits: Split[]; satisfied: boolean } {
+  if (!pairs.length || !splits.length) return { splits, satisfied: true };
+  const ok = splits.filter((s) => {
+    const inA = new Set(s.a), inB = new Set(s.b);
+    return pairs.every((p) => {
+      if (!(inA.has(p.a) || inB.has(p.a)) || !(inA.has(p.b) || inB.has(p.b)) || p.a === p.b) return true;
+      const same = inA.has(p.a) === inA.has(p.b);
+      return p.mode === "together" ? same : !same;
+    });
+  });
+  return ok.length ? { splits: ok, satisfied: true } : { splits, satisfied: false };
+}
+
 /** 「振り直し」で順番に出す候補: 最良案と、それに近い案。 */
 export function rerollOptions(splits: Split[]): Split[] {
   if (!splits.length) return [];
@@ -86,21 +110,25 @@ export function rerollOptions(splits: Split[]): Split[] {
 }
 
 // ---------- 成績と実力の関係（実測値） ----------
-// コンペ1,669試合・のべ16,252人分（本人、一緒に組んだ人、同じ試合にいた人をランク帯が偏らないように集めたもの）から求めた値。
+// コンペ2,076試合・のべ20,355人分（本人、一緒に組んだ人、同じ試合にいた人をランク帯が偏らないように集めたもの）から求めた値。
 
-/** 試合内の10人平均を 1.00 としたときの、ロールごとの平均 ACS（ランク差の影響を除いた値）。デュエリストは高く、イニシエーターは低く出る。 */
-export const ROLE_ACS: Record<Role, number> = { duelist: 1.05, initiator: 0.89, controller: 1.04, sentinel: 0.98 };
 /**
- * 同じロールでも、エージェントによって ACS の出やすさが違う（例: デュエリストでもレイナ 1.10、ネオン 1.00）。
- * 30件以上のデータがあるエージェントだけ個別の値を持ち、それ以外はロールの平均を使う。
- * 値はランク差の影響を除き、件数が少ないものほどロール平均へ寄せてある。
+ * 同じロールでも、エージェントによって ACS の出やすさが違う（例: デュエリストでもレイナ 1.09、ネオン 0.99）。
+ * 値は試合内の10人平均を 1.00 としたもので、ランク差の影響を除いてある。
+ * 件数が少ないエージェントほど、同じロールのエージェントの平均へ寄せて推定している（30件で半々）。
  */
 export const AGENT_ACS: Record<string, number> = {
-  iso: 1.1, reyna: 1.1, phoenix: 1.08, jett: 1.07, yoru: 1.02, raze: 1.01, waylay: 1.0, hush: 1.0, neon: 1.0,
-  "kay/o": 0.94, breach: 0.93, tejo: 0.93, gekko: 0.91, sova: 0.89, fade: 0.87, skye: 0.86,
-  clove: 1.08, harbor: 1.07, astra: 0.99, miks: 0.98, brimstone: 0.97, omen: 0.97,
-  chamber: 1.03, vyse: 0.98, killjoy: 0.98, veto: 0.98, deadlock: 0.97, cypher: 0.94, sage: 0.93,
+  iso: 1.09, reyna: 1.09, phoenix: 1.08, jett: 1.07, raze: 1.02, yoru: 1.02, hush: 1.0, neon: 0.99, waylay: 0.99,
+  breach: 0.95, "kay/o": 0.94, tejo: 0.92, gekko: 0.91, sova: 0.89, fade: 0.88, skye: 0.86,
+  clove: 1.08, harbor: 1.04, miks: 0.99, brimstone: 0.98, viper: 0.98, omen: 0.97, astra: 0.96,
+  chamber: 1.04, vyse: 0.99, veto: 0.98, deadlock: 0.97, killjoy: 0.97, cypher: 0.94, sage: 0.93,
 };
+/**
+ * 表に無いエージェント（新しく追加されたものなど）に使う、ロールごとの値。
+ * 試合数で重み付けした平均ではなく、エージェントごとの値の単純平均にしてある
+ * （重み付けすると、使用者の多い1体に引っ張られて、他のエージェントの目安として偏るため）。
+ */
+export const ROLE_ACS: Record<Role, number> = { duelist: 1.04, initiator: 0.91, controller: 1.0, sentinel: 0.97 };
 /** その試合で使ったエージェント（無ければロール）から見込まれる、平均的な ACS 比。 */
 export function acsBaseline(agent: string | null | undefined, role: Role | null): number {
   return (agent && AGENT_ACS[agent.toLowerCase()]) || (role ? ROLE_ACS[role] : 1);
