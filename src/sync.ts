@@ -281,6 +281,13 @@ export async function syncStep(
       await refreshRanks(env, api, [l]);
     }
 
+    // API 側の一時的な障害（5xx）で諦めた試合は、時間を空けてからやり直す
+    await env.DB.prepare(
+      `UPDATE match_queue SET status = 'pending', attempts = 0 WHERE status = 'error' AND updated_at < ? AND error LIKE 'HenrikDev API 5%'`,
+    )
+      .bind(now - ERROR_RETRY_MS)
+      .run();
+
     // 収集対象: 確認が古い順に数人ずつ、直近の試合を取り込み待ちに積む（保管庫が無い環境では何もしない）
     if (env.ARCHIVE) out.discovered += await trackStep(env, api, now);
 
@@ -413,6 +420,8 @@ async function pruneTracked(env: Env, now: number): Promise<number> {
   return results.length;
 }
 
+/** 一時的な障害で諦めた試合を、もう一度試すまでの間隔。 */
+const ERROR_RETRY_MS = 3 * 60 * 60 * 1000;
 const COMPACT_PER_STEP = 2;
 const ARCHIVE_PER_STEP = 6;
 
