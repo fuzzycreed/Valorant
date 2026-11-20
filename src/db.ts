@@ -158,8 +158,13 @@ const DDL_V12 = [
   `ALTER TABLE lobbies ADD COLUMN pairs TEXT`,
 ];
 
+const DDL_V13 = [
+  // 振り直しの並びを決める種（チーム分けを押すたびに変える）
+  `ALTER TABLE lobbies ADD COLUMN seed INTEGER`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12, DDL_V13];
 
 let ready: Promise<void> | null = null;
 

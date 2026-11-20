@@ -543,10 +543,10 @@ function teamResultHtml() {
     <p class="summary">${team.map ? `マップ: <b>${esc(team.map)}</b> ・ ` : ""}${atk.length === def.length
       ? `戦力差（1人あたり） <b>${o.diff}</b>`
       : `人数が違うので合計の戦力で釣り合わせています（合計の差 <b>${o.sumDiff}</b>）`}
-      <span class="muted">（案 ${(team.variant % r.options.length) + 1}/${r.options.length}）</span></p>
+      <span class="muted">（案 ${(team.variant % r.options.length) + 1}/${r.options.length} ・ ${o.tier ? `最良案 +${r.tiers[o.tier - 1]}点以内（${o.tier}/${r.tiers.length}段階${o.tier === r.tiers.length ? "・上限" : ""}）` : "最も釣り合う案"}）</span></p>
     ${block("アタッカー側", atk)}${block("ディフェンダー側", def)}
     <div class="actions">
-      <button type="button" class="btn" data-act="reroll"${r.options.length < 2 ? " disabled" : ""}>振り直し</button>
+      <button type="button" class="btn" data-act="reroll"${r.options.length < 2 ? " disabled" : ""} title="押すたびに許容幅を広げて別の案を出します（最良案との差が1人あたり ${r.tiers.join(" → ")} 点以内。ロールの偏りも差に含みます）">振り直し</button>
       <button type="button" class="btn" data-act="remap"${team.maps.length < 2 ? " disabled" : ""}>マップ変更</button>
       <button type="button" class="btn" data-act="flip">攻守を入れ替え</button>
       <button type="button" class="btn" data-act="copy">結果をコピー</button>

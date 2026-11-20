@@ -4,8 +4,12 @@ import type { Role } from "./agents";
 
 /** ロールの偏り1人分を、レート何点分の不利として扱うか。 */
 export const ROLE_WEIGHT = 25;
-/** 「振り直し」で候補に含める範囲: 最良案からこの点数以内の案まで。 */
-export const REROLL_SLACK = 60;
+/**
+ * 「振り直し」で許す、最良案との差（1人あたりの戦力差）。押すたびに1段ずつ広げ、3回目で上限に届く。
+ * 上限の根拠: カスタム82試合の実測で、戦力差100点の勝率は約65%、40点なら約56%。
+ * 戦力差100点未満の試合は勝敗の的中がほぼ五分（16/35）だったので、この範囲なら公平さは実質変わらない。
+ */
+export const REROLL_TIERS = [12, 25, 40];
 export const MAX_OPTIONS = 12;
 
 export interface Candidate {
@@ -102,11 +106,47 @@ export function applyPairs(splits: Split[], pairs: Pair[]): { splits: Split[]; s
   return ok.length ? { splits: ok, satisfied: true } : { splits, satisfied: false };
 }
 
-/** 「振り直し」で順番に出す候補: 最良案と、それに近い案。 */
-export function rerollOptions(splits: Split[]): Split[] {
+/** 振り直しの候補。tier は最良案との差の段階（0 = 最良案、1〜3 = REROLL_TIERS の何段目の範囲に入るか）。 */
+export interface RerollOption extends Split {
+  tier: number;
+}
+
+/** 種から決まる乱数（同じ種なら同じ並びになる。Discord ではボタンを押すたびに計算し直すため）。 */
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * 「振り直し」で順番に出す候補。先頭は最良案。
+ * 1回目は最良案から1人あたり 12点以内、2回目は 25点以内、3回目以降は 40点以内（上限）の案から、
+ * まだ出していないものを無作為に1つ選ぶ。その範囲に候補が無ければ、次の範囲へ先に広げる。
+ * 比べるのは cost（戦力の合計の差 + ロールの偏り）なので、ロールが偏る案はそのぶん範囲に入りにくい。
+ */
+export function rerollOptions(splits: Split[], seed = 0): RerollOption[] {
   if (!splits.length) return [];
-  const limit = splits[0].cost + REROLL_SLACK;
-  return splits.filter((s) => s.cost <= limit).slice(0, MAX_OPTIONS);
+  const best = splits[0];
+  // cost は合計の差なので、1人あたりの点数に人数（片側ぶん）を掛けて比べる
+  const perSide = (best.a.length + best.b.length) / 2;
+  const tierOf = (s: Split) => REROLL_TIERS.findIndex((t) => s.cost <= best.cost + t * perSide) + 1;
+  const pool = splits.slice(1).map((s) => ({ ...s, tier: tierOf(s) })).filter((s) => s.tier > 0);
+  const out: RerollOption[] = [{ ...best, tier: 0 }];
+  const rand = seeded(seed);
+  for (let press = 1; out.length < MAX_OPTIONS && pool.length; press++) {
+    const allowed = Math.min(press, REROLL_TIERS.length);
+    const lowest = Math.min(...pool.map((s) => s.tier));
+    const within = pool.filter((s) => s.tier <= Math.max(allowed, lowest));
+    const pick = within[Math.floor(rand() * within.length)];
+    pool.splice(pool.indexOf(pick), 1);
+    out.push(pick);
+  }
+  return out;
 }
 
 // ---------- 成績と実力の関係（実測値） ----------

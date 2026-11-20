@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acsBaseline, ACS_PER_POINT, AGENT_ACS, applyPairs, balance, EXPECTED_FLOOR, impact, perfAdjustment, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
+import { acsBaseline, ACS_PER_POINT, AGENT_ACS, applyPairs, balance, EXPECTED_FLOOR, impact, perfAdjustment, REROLL_TIERS, rerollOptions, ROLE_ACS, type Candidate, type PerfSample } from "../src/balance";
 
 const P = (id: string, rating: number, role: Candidate["role"] = null): Candidate => ({ id, rating, role });
 
@@ -57,12 +57,39 @@ describe("balance", () => {
     expect(balance([P("a", 1000)])).toEqual([]);
   });
 
-  it("振り直し候補は最良案に近いものだけ", () => {
+  it("振り直しは押すたびに範囲を広げ、3回目で上限に届く", () => {
     const players = [1500, 1450, 1400, 1380, 1350, 1320, 1300, 1250, 1200, 1100].map((r, i) => P(`p${i}`, r));
-    const opts = rerollOptions(balance(players));
-    expect(opts.length).toBeGreaterThan(1);
+    const splits = balance(players);
+    const opts = rerollOptions(splits, 123);
+    const best = splits[0];
+    expect(opts[0]).toMatchObject({ a: best.a, b: best.b, tier: 0 });
+    expect(opts.length).toBeGreaterThan(3);
     expect(opts.length).toBeLessThanOrEqual(12);
-    for (const o of opts) expect(o.cost).toBeLessThanOrEqual(opts[0].cost + 60);
+    // 5対5なので、1人あたりの点数 × 5 が合計の差の許容幅になる
+    expect(opts[1].cost).toBeLessThanOrEqual(best.cost + REROLL_TIERS[0] * 5);
+    expect(opts[2].cost).toBeLessThanOrEqual(best.cost + REROLL_TIERS[1] * 5);
+    for (const o of opts) expect(o.cost).toBeLessThanOrEqual(best.cost + REROLL_TIERS[2] * 5);
+    // tier は、その案が入る一番狭い範囲
+    for (const o of opts.slice(1)) {
+      expect(o.cost).toBeLessThanOrEqual(best.cost + REROLL_TIERS[o.tier - 1] * 5);
+      if (o.tier > 1) expect(o.cost).toBeGreaterThan(best.cost + REROLL_TIERS[o.tier - 2] * 5);
+    }
+    // 同じ案は二度出ない
+    expect(new Set(opts.map((o) => [...o.a].sort().join())).size).toBe(opts.length);
+  });
+
+  it("振り直しの並びは種で決まり、種を変えると変わる", () => {
+    const players = [1500, 1450, 1400, 1380, 1350, 1320, 1300, 1250, 1200, 1100].map((r, i) => P(`p${i}`, r));
+    const splits = balance(players);
+    const key = (seed: number) => rerollOptions(splits, seed).map((o) => o.a.join()).join("|");
+    expect(key(7)).toBe(key(7));
+    expect(new Set([1, 2, 3, 4, 5].map(key)).size).toBeGreaterThan(1);
+  });
+
+  it("狭い範囲に候補が無ければ、先に次の範囲へ広げる", () => {
+    // 2対2: 最良案（合計の差 0）の次は、合計の差が 60（1人あたり 30）の案が2つあるだけ
+    const opts = rerollOptions(balance([P("a", 1030), P("b", 1000), P("c", 1000), P("d", 970)]), 1);
+    expect(opts.map((o) => o.tier)).toEqual([0, 3, 3]);
   });
 });
 

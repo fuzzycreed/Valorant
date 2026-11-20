@@ -1,7 +1,7 @@
 // ウェブ版のチーム分け API。Discord を使わずに、サイト上で参加者を選んでチームを分ける。
 
 import { ROLE_LABEL, type Role } from "./agents";
-import { balance, rerollOptions, applyPairs, type Pair } from "./balance";
+import { balance, rerollOptions, applyPairs, REROLL_TIERS, type Pair } from "./balance";
 import { ensureSchema, type Env } from "./db";
 import { Henrik } from "./henrik";
 import { isStale, ratePlayers, refreshRanks, type Link, type Rated } from "./rating";
@@ -147,12 +147,15 @@ async function split(req: Request, env: Env) {
     .slice(0, MAX_PAIRS)
     .map((p) => ({ a: p.a, b: p.b, mode: p.mode }));
   const filtered = applyPairs(balance(everyone.map((p) => ({ id: p.id, rating: p.rating, role: p.role }))), pairs);
-  const options = rerollOptions(filtered.splits);
+  // 振り直しの並びは、分けるたびに変える
+  const options = rerollOptions(filtered.splits, crypto.getRandomValues(new Uint32Array(1))[0]);
   return json({
     players: everyone,
+    // 振り直しで許す、最良案との差（1人あたり）。options の tier がこの何段目かを表す（0 は最良案）
+    tiers: REROLL_TIERS,
     // 指定をすべて満たす分け方が無かった場合は false（指定なしで分けている）
     pairsSatisfied: filtered.satisfied,
-    options: options.map((o) => ({ a: o.a, b: o.b, diff: Math.round(o.diff), sumDiff: Math.round(o.sumDiff) })),
+    options: options.map((o) => ({ a: o.a, b: o.b, diff: Math.round(o.diff), sumDiff: Math.round(o.sumDiff), tier: o.tier })),
     maps: await recentMaps(env),
   });
 }

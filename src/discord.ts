@@ -1,7 +1,7 @@
 // Discord のチーム分け bot。常駐プロセスを持たず、Discord からの HTTP 呼び出し（Interactions）だけで動く。
 
 import { ROLE_LABEL } from "./agents";
-import { balance, rerollOptions, applyPairs, type Pair } from "./balance";
+import { balance, rerollOptions, applyPairs, REROLL_TIERS, type Pair } from "./balance";
 import { ensureSchema, type Env } from "./db";
 import { Henrik } from "./henrik";
 import { isStale, ratePlayers, refreshRanks, type Link, type Rated } from "./rating";
@@ -49,6 +49,8 @@ interface Lobby {
   flip: number;
   /** ペアの指定（Pair の配列の JSON）。未指定なら null */
   pairs?: string | null;
+  /** 振り直しの並びを決める種。「チーム分け」を押すたびに変わる */
+  seed?: number | null;
 }
 
 const MAX_LOBBY_PAIRS = 10;
@@ -201,9 +203,10 @@ function splitMessage(lobby: Lobby, rated: Rated[]) {
   const present = new Set(rated.map((r) => r.userId));
   const pairs = lobbyPairs(lobby).filter((p) => present.has(p.a) && present.has(p.b));
   const filtered = applyPairs(balance(rated.map((r) => ({ id: r.userId, rating: r.rating, role: r.role }))), pairs);
-  const options = rerollOptions(filtered.splits);
+  const options = rerollOptions(filtered.splits, lobby.seed ?? 0);
   const index = lobby.variant % options.length;
   const s = options[index];
+  const range = s.tier === 0 ? "最も釣り合う案" : `最良案 +${REROLL_TIERS[s.tier - 1]}点以内（${s.tier}/${REROLL_TIERS.length}段階${s.tier === REROLL_TIERS.length ? "・上限" : ""}）`;
   const byId = new Map(rated.map((r) => [r.userId, r]));
   const [atk, def] = lobby.flip ? [s.b, s.a] : [s.a, s.b];
   const team = (ids: string[]) => {
@@ -216,7 +219,7 @@ function splitMessage(lobby: Lobby, rated: Rated[]) {
     content: "",
     embeds: [
       {
-        title: `チーム分け（案 ${index + 1}/${options.length}）`,
+        title: `チーム分け（案 ${index + 1}/${options.length} ・ ${range}）`,
         color: COLOR,
         description:
           (lobby.map ? `マップ: **${lobby.map}**\n` : "") +
@@ -230,7 +233,7 @@ function splitMessage(lobby: Lobby, rated: Rated[]) {
           { name: `アタッカー側 ・ 平均 ${a.avg}`, value: a.value },
           { name: `ディフェンダー側 ・ 平均 ${d.avg}`, value: d.value },
         ],
-        footer: { text: "戦力はレートを元に、参加者の平均から大きく離れた人ほど強く効くものとして計算。レートの内訳は /rating" },
+        footer: { text: `「振り直し」は押すたびに許容幅を広げます（最良案との差が1人あたり ${REROLL_TIERS.join(" → ")} 点以内。ロールの偏りも差に含む）。レートの内訳は /rating` },
       },
     ],
     components: [
@@ -406,6 +409,7 @@ async function component(env: Env, ctx: ExecutionContext, i: any, userId: string
     if (action === "split") {
       lobby.state = "split";
       lobby.variant = 0;
+      lobby.seed = Math.floor(Math.random() * 2 ** 31);
       lobby.flip = Math.random() < 0.5 ? 1 : 0;
       lobby.map = await randomMap(env, null);
     } else if (action === "reroll") {
@@ -414,8 +418,8 @@ async function component(env: Env, ctx: ExecutionContext, i: any, userId: string
     } else {
       lobby.map = await randomMap(env, lobby.map);
     }
-    await db.prepare(`UPDATE lobbies SET state = ?, variant = ?, flip = ?, map = ? WHERE lobby_id = ?`)
-      .bind(lobby.state, lobby.variant, lobby.flip, lobby.map, lobbyId)
+    await db.prepare(`UPDATE lobbies SET state = ?, variant = ?, flip = ?, map = ?, seed = ? WHERE lobby_id = ?`)
+      .bind(lobby.state, lobby.variant, lobby.flip, lobby.map, lobby.seed ?? null, lobbyId)
       .run();
 
     const stale = links.filter((l) => isStale(l, now));
