@@ -486,7 +486,7 @@ const ROLES = { duelist: "デュエリスト", initiator: "イニシエーター
 const team = { players: [], maps: [], selected: new Set(), guests: [], pairs: [], boost: 0, result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
 /** まとめて追加できる人数の上限と、新規登録どうしの間隔（外部 API の制限に収めるため。登録は1人で枠を7使い、1分の枠は30）。 */
 const TEAM_ADD_MAX = 20;
-const TEAM_ADD_GAP_MS = 14000;
+const TEAM_ADD_GAP_MS = 11000;
 try {
   const saved = JSON.parse(localStorage.getItem("team") ?? "{}");
   team.selected = new Set(saved.selected ?? []);

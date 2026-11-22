@@ -8,7 +8,7 @@ import { handleTeams } from "./teams";
 /** 急ぎの取り込みを1回の定期実行で続ける時間（ミリ秒）。次の定期実行（1分後）と重ならないようにする。 */
 const BOOST_BUDGET_MS = 50_000;
 /** 登録の直後は、API の枠を登録（1人あたり 7 消費）に譲る。最後の登録からこの時間は急ぎの取り込みを始めない。 */
-const BOOST_YIELD_MS = 45_000;
+const BOOST_YIELD_MS = 20_000;
 /** 通常の同期（新着の検出など）を回す間隔（分）。定期実行そのものは毎分動く。 */
 const SYNC_EVERY_MIN = 5;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

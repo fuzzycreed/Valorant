@@ -475,7 +475,7 @@ async function pruneTracked(env: Env, now: number): Promise<number> {
 /** 一時的な障害で諦めた試合を、もう一度試すまでの間隔。 */
 const ERROR_RETRY_MS = 3 * 60 * 60 * 1000;
 const COMPACT_PER_STEP = 2;
-const ARCHIVE_PER_STEP = 6;
+const ARCHIVE_PER_STEP = 20;
 
 /** 未圧縮の生データを gzip で圧縮し直す。圧縮した件数を返す。 */
 export async function compactRaw(env: Env, limit: number): Promise<number> {
