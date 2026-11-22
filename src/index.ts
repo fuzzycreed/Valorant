@@ -67,6 +67,8 @@ export default {
         (e) => console.error("discord command registration failed", e),
       ),
     );
-    ctx.waitUntil(tick(env, event.scheduledTime).catch((e) => console.error("sync failed", e)));
+    // waitUntil に渡すと、ハンドラーが返ってから約30秒で打ち切られる。急ぎの取り込みは1回の定期実行で
+    // 30秒以上かかることがあるので、ここで終わるまで待つ（定期実行そのものは最長15分動ける）
+    await tick(env, event.scheduledTime).catch((e) => console.error("sync failed", e));
   },
 } satisfies ExportedHandler<Env>;
