@@ -13,8 +13,9 @@
   "d1_databases": [{ "binding": "DB", "database_name": "valorant-stats" }],
   // 分析用の保管庫。バケットが無ければ、デプロイ時に wrangler がこの名前で作成する（R2 を有効にしてあること）
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "valorant-stats-archive" }],
-  // 自分自身への呼び出し口。登録直後の試合を、1分間に何度も別の実行として取り込むのに使う
-  "services": [{ "binding": "SELF", "service": "valorant-stats" }],
+  // 自分自身への呼び出し口。登録直後の試合を、1分間に何度も別の実行として取り込むのに使う。
+  // service は Cloudflare 上の Worker 名（ダッシュボードで GitHub と連携している Worker は「valorant」。上の name とは別）
+  "services": [{ "binding": "SELF", "service": "valorant" }],
   // 毎分動かし、通常の同期は5分に1回だけ回す（src/index.ts の tick）
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
