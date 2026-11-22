@@ -35,6 +35,8 @@ export interface SyncResult {
   /** focus で指定したプレイヤーの取り込み待ち件数 */
   focusPending: number;
   rateLimited: boolean;
+  /** rateLimited のとき、制限が解けるまでの秒数（API が返した値） */
+  retryAfter?: number;
   errors: string[];
 }
 
@@ -254,6 +256,12 @@ export async function boostPending(env: Env): Promise<number> {
   return (await env.DB.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE ${LINKED_PENDING}`).first<{ n: number }>())?.n ?? 0;
 }
 
+/** いちばん最近の登録からの経過ミリ秒（登録者がいなければ Infinity）。登録の最中は API の枠を登録に譲るために見る。 */
+export async function sinceLastLink(env: Env, now = Date.now()): Promise<number> {
+  const t = (await env.DB.prepare(`SELECT MAX(linked_at) AS t FROM discord_links`).first<{ t: number | null }>())?.t;
+  return t ? now - t : Infinity;
+}
+
 /**
  * 急ぎの取り込み: チーム分けに登録した人の試合だけを取り込む。新着の検出や保管庫への書き出しなど、ほかの処理は一切しない。
  * 登録直後に成績の補正とロールを早くそろえるためのもので、定期実行から1分間に何度も呼ばれる。
@@ -262,16 +270,23 @@ export async function boostStep(env: Env, maxMatches = 2): Promise<SyncResult> {
   const out: SyncResult = { discovered: 0, processed: 0, failed: 0, pending: 0, focusPending: 0, rateLimited: false, errors: [] };
   if (!env.HENRIK_API_KEY) throw new Error("HENRIK_API_KEY が設定されていません");
   await ensureSchema(env.DB);
+  // 1人の試合ばかり先に入らないよう、各人の新しい試合から順に1試合ずつ回す（全員の補正が同じペースで育つ）
   const { results } = await env.DB.prepare(
-    `SELECT match_id, region, attempts, keep_raw FROM match_queue WHERE ${LINKED_PENDING} ORDER BY started_at DESC LIMIT ?`,
+    `SELECT match_id, region, attempts, keep_raw FROM (
+       SELECT match_id, region, attempts, keep_raw, started_at,
+              ROW_NUMBER() OVER (PARTITION BY puuid ORDER BY started_at DESC) AS rn
+       FROM match_queue WHERE ${LINKED_PENDING}
+     ) ORDER BY rn, started_at DESC LIMIT ?`,
   )
     .bind(maxMatches)
     .all<Queued>();
   try {
     await ingest(env, new Henrik(env.HENRIK_API_KEY), results, out);
   } catch (e) {
-    if (e instanceof HenrikError && e.status === 429) out.rateLimited = true;
-    else throw e;
+    if (e instanceof HenrikError && e.status === 429) {
+      out.rateLimited = true;
+      out.retryAfter = e.retryAfter;
+    } else throw e;
   }
   out.pending = await boostPending(env);
   return out;

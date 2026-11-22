@@ -2,33 +2,43 @@ import { handleApi, json } from "./api";
 import { handleArchive } from "./archive";
 import type { Env } from "./db";
 import { discordStatus, handleDiscord, registerCommands } from "./discord";
-import { boostPending, boostStep, syncStep, type SyncResult } from "./sync";
+import { boostPending, boostStep, sinceLastLink, syncStep, type SyncResult } from "./sync";
 import { handleTeams } from "./teams";
 
-/** 急ぎの取り込みを、1回の定期実行で何回まで回すか（1回2試合。API の 1分30回の制限に収める）。 */
-const BOOST_CALLS_PER_TICK = 13;
+/** 急ぎの取り込みを1回の定期実行で続ける時間（ミリ秒）。次の定期実行（1分後）と重ならないようにする。 */
+const BOOST_BUDGET_MS = 50_000;
+/** 登録の直後は、API の枠を登録（1人あたり 7 消費）に譲る。最後の登録からこの時間は急ぎの取り込みを始めない。 */
+const BOOST_YIELD_MS = 45_000;
 /** 通常の同期（新着の検出など）を回す間隔（分）。定期実行そのものは毎分動く。 */
 const SYNC_EVERY_MIN = 5;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * 毎分の定期実行。チーム分けに登録した人の試合が取り込み待ちに残っていれば、それを最優先で一気に取り込む。
+ * 毎分の定期実行。チーム分けに登録した人の試合が取り込み待ちに残っていれば、それを最優先で取り込む。
+ * API の枠（1分に試合15件ぶん）を使い切るまで続け、制限に当たったら枠が戻るのを待ってまた続ける。
  * 取り込みは1回ごとに自分自身を呼び直し、別の実行として処理する（1回の実行で使える CPU 時間が短いため）。
  * 残っていなければ、5分に1回だけ通常の同期を回す。
  */
 async function tick(env: Env, scheduledTime: number): Promise<void> {
   let pending = await boostPending(env);
   if (pending > 0) {
+    if ((await sinceLastLink(env)) < BOOST_YIELD_MS) return console.log("boost", JSON.stringify({ pending, yielded: true }));
+    const deadline = Date.now() + BOOST_BUDGET_MS;
     let processed = 0, limited = false;
     // 自分自身を呼べない環境（ローカルなど）では、この実行の中で1回だけ進める
-    const calls = env.SELF ? BOOST_CALLS_PER_TICK : 1;
-    for (let i = 0; i < calls && pending > 0 && !limited; i++) {
+    for (let i = 0; i < (env.SELF ? 40 : 1) && pending > 0 && Date.now() < deadline; i++) {
       const r: SyncResult = env.SELF
         ? await (await env.SELF.fetch("https://self/api/sync/boost", { method: "POST" })).json()
         : await boostStep(env);
       processed += r.processed;
       pending = r.pending;
       limited = r.rateLimited;
-      if (!r.processed && !r.failed) break;
+      if (r.rateLimited) {
+        // 枠が戻るまで待って続ける。この回の持ち時間を超えるなら、続きは次の定期実行に任せる
+        const wait = ((r.retryAfter ?? 10) + 1) * 1000;
+        if (Date.now() + wait >= deadline) break;
+        await sleep(wait);
+      } else if (!r.processed && !r.failed) break;
     }
     console.log("boost", JSON.stringify({ processed, pending, limited }));
     // 進んだか、API の制限で止まっただけなら、この回は急ぎの取り込みだけにする

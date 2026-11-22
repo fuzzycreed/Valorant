@@ -1,5 +1,7 @@
 // HenrikDev API（非公式 VALORANT API）の薄いクライアント。
 
+// 回数制限は「1分に30」だが、数え方は回数ではなく重み。実測では、試合・ランク・RR の履歴・試合履歴・puuid 指定のアカウントは
+// 1回で 2、名前指定のアカウントは 1 を消費する。つまり試合は1分に15件までしか取れない。
 const BASE = "https://api.henrikdev.xyz/valorant";
 
 export class HenrikError extends Error {
@@ -7,9 +9,17 @@ export class HenrikError extends Error {
     public status: number,
     public path: string,
     body: string,
+    /** 回数制限（429）のとき、制限が解けるまでの秒数。分からなければ undefined */
+    public retryAfter?: number,
   ) {
     super(`HenrikDev API ${status} ${path}: ${body.slice(0, 200)}`);
   }
+}
+
+/** Ratelimit ヘッダー（例: "per1min";r=0;t=8）から、制限が解けるまでの秒数を読む。 */
+export function resetSeconds(header: string | null): number | undefined {
+  const t = /(?:^|;)\s*t=(\d+)/.exec(header ?? "")?.[1];
+  return t == null ? undefined : Number(t);
 }
 
 export class Henrik {
@@ -22,7 +32,7 @@ export class Henrik {
       headers: { Authorization: this.key, Accept: "application/json", ...(init?.headers ?? {}) },
     });
     const body = await res.text();
-    if (!res.ok) throw new HenrikError(res.status, path, body);
+    if (!res.ok) throw new HenrikError(res.status, path, body, res.status === 429 ? resetSeconds(res.headers.get("Ratelimit")) : undefined);
     return body;
   }
 

@@ -484,9 +484,9 @@ async function viewMatch(id) {
 
 const ROLES = { duelist: "デュエリスト", initiator: "イニシエーター", controller: "コントローラー", sentinel: "センチネル" };
 const team = { players: [], maps: [], selected: new Set(), guests: [], pairs: [], boost: 0, result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
-/** まとめて追加できる人数の上限と、新規登録どうしの間隔（外部 API のレート制限に収めるため）。 */
+/** まとめて追加できる人数の上限と、新規登録どうしの間隔（外部 API の制限に収めるため。登録は1人で枠を7使い、1分の枠は30）。 */
 const TEAM_ADD_MAX = 20;
-const TEAM_ADD_GAP_MS = 6000;
+const TEAM_ADD_GAP_MS = 14000;
 try {
   const saved = JSON.parse(localStorage.getItem("team") ?? "{}");
   team.selected = new Set(saved.selected ?? []);
@@ -623,7 +623,7 @@ function renderTeams() {
 
 /** 登録した人の試合の取り込み状況（成績の補正とロールは、取り込みが済むと入る）。 */
 const boostText = () =>
-  team.boost > 0 ? `登録した人の試合を取り込み中です（残り ${team.boost} 試合・あと約 ${Math.max(1, Math.ceil(team.boost / 24))} 分）。終わると成績の補正とロールが入ります。` : "";
+  team.boost > 0 ? `登録した人の試合を取り込み中です（残り ${team.boost} 試合・あと約 ${Math.max(1, Math.ceil(team.boost / 15))} 分）。終わると成績の補正とロールが入ります。` : "";
 let boostTimer = null;
 /** 取り込み待ちが残っている間、15秒おきに状況を見る。終わったら一覧を取り直してレートを更新する。 */
 async function watchBoost() {
