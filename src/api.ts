@@ -215,7 +215,7 @@ async function mmr(env: Env, q: URLSearchParams) {
 
 async function status(env: Env, q: URLSearchParams) {
   const db = env.DB;
-  const [queue, meta, count, mine, raw, unarchived, tracked] = await db.batch<any>([
+  const [queue, meta, count, mine, raw, unarchived, tracked, boost] = await db.batch<any>([
     db.prepare(`SELECT status, COUNT(*) AS n FROM match_queue GROUP BY status`),
     db.prepare(`SELECT value FROM meta WHERE key = 'last_sync'`),
     db.prepare(`SELECT COUNT(*) AS n FROM matches`),
@@ -223,6 +223,7 @@ async function status(env: Env, q: URLSearchParams) {
     db.prepare(`SELECT COUNT(*) AS n, SUM(gz IS NULL) AS plain FROM match_raw`),
     db.prepare(`SELECT COUNT(*) AS n FROM matches WHERE archived = 0`),
     db.prepare(`SELECT COUNT(*) AS n FROM tracked`),
+    db.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE status = 'pending' AND puuid IN (SELECT puuid FROM discord_links)`),
   ]);
   const by: Record<string, number> = {};
   for (const r of queue.results) by[r.status] = r.n;
@@ -242,6 +243,8 @@ async function status(env: Env, q: URLSearchParams) {
     archive_pending: unarchived.results[0]?.n ?? 0,
     // 収集対象（サイトには出さず、試合を拾い続けるだけの人）の人数
     tracked: tracked.results[0]?.n ?? 0,
+    // チーム分けに登録した人の試合のうち、まだ取り込んでいない数（残っている間は毎分まとめて取り込む）
+    boost_pending: boost.results[0]?.n ?? 0,
   });
 }
 

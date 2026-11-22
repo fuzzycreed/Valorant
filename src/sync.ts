@@ -224,6 +224,59 @@ async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
   return res[0]?.meta?.changes ?? 0;
 }
 
+type Queued = { match_id: string; region: string; attempts: number; keep_raw: number };
+
+/** 取り込み待ちの試合を取得して保存する。レート制限（429）は呼び出し元へ投げる。 */
+async function ingest(env: Env, api: Henrik, rows: Queued[], out: SyncResult): Promise<void> {
+  for (const q of rows) {
+    try {
+      const body = await api.matchText(q.region, q.match_id);
+      const computed = computeMatch(JSON.parse(body).data);
+      await env.DB.batch(ingestStatements(env.DB, computed, q.keep_raw ? body : null));
+      out.processed++;
+    } catch (e) {
+      if (e instanceof HenrikError && e.status === 429) throw e;
+      const attempts = q.attempts + 1;
+      const msg = e instanceof Error ? e.message : String(e);
+      out.failed++;
+      out.errors.push(`${q.match_id}: ${msg}`);
+      await env.DB.prepare(`UPDATE match_queue SET attempts = ?, status = ?, error = ?, updated_at = ? WHERE match_id = ?`)
+        .bind(attempts, attempts >= MAX_ATTEMPTS ? "error" : "pending", msg.slice(0, 500), Date.now(), q.match_id)
+        .run();
+    }
+  }
+}
+
+/** チーム分けに登録した人の試合のうち、まだ取り込んでいない数。これが残っている間は「急ぎの取り込み」を回す。 */
+const LINKED_PENDING = `status = 'pending' AND puuid IN (SELECT puuid FROM discord_links)`;
+export async function boostPending(env: Env): Promise<number> {
+  await ensureSchema(env.DB);
+  return (await env.DB.prepare(`SELECT COUNT(*) AS n FROM match_queue WHERE ${LINKED_PENDING}`).first<{ n: number }>())?.n ?? 0;
+}
+
+/**
+ * 急ぎの取り込み: チーム分けに登録した人の試合だけを取り込む。新着の検出や保管庫への書き出しなど、ほかの処理は一切しない。
+ * 登録直後に成績の補正とロールを早くそろえるためのもので、定期実行から1分間に何度も呼ばれる。
+ */
+export async function boostStep(env: Env, maxMatches = 2): Promise<SyncResult> {
+  const out: SyncResult = { discovered: 0, processed: 0, failed: 0, pending: 0, focusPending: 0, rateLimited: false, errors: [] };
+  if (!env.HENRIK_API_KEY) throw new Error("HENRIK_API_KEY が設定されていません");
+  await ensureSchema(env.DB);
+  const { results } = await env.DB.prepare(
+    `SELECT match_id, region, attempts, keep_raw FROM match_queue WHERE ${LINKED_PENDING} ORDER BY started_at DESC LIMIT ?`,
+  )
+    .bind(maxMatches)
+    .all<Queued>();
+  try {
+    await ingest(env, new Henrik(env.HENRIK_API_KEY), results, out);
+  } catch (e) {
+    if (e instanceof HenrikError && e.status === 429) out.rateLimited = true;
+    else throw e;
+  }
+  out.pending = await boostPending(env);
+  return out;
+}
+
 /**
  * 同期を1ステップ進める: 新着の検出 → キューから maxMatches 件だけ取り込み。
  * 無料プランの CPU 上限に収めるため、1回の呼び出しで処理する試合数を小さく保つ。
@@ -293,28 +346,12 @@ export async function syncStep(
 
     const { results } = await env.DB.prepare(
       `SELECT match_id, region, attempts, keep_raw FROM match_queue WHERE status = 'pending'
-       ORDER BY (puuid = ?) DESC, keep_raw DESC, (queue = '') DESC, started_at DESC LIMIT ?`,
+       ORDER BY (puuid = ?) DESC, (puuid IN (SELECT puuid FROM discord_links)) DESC, keep_raw DESC, (queue = '') DESC, started_at DESC LIMIT ?`,
     )
       .bind(focus, opts.maxMatches ?? 2)
-      .all<{ match_id: string; region: string; attempts: number; keep_raw: number }>();
+      .all<Queued>();
 
-    for (const q of results) {
-      try {
-        const body = await api.matchText(q.region, q.match_id);
-        const computed = computeMatch(JSON.parse(body).data);
-        await env.DB.batch(ingestStatements(env.DB, computed, q.keep_raw ? body : null));
-        out.processed++;
-      } catch (e) {
-        if (e instanceof HenrikError && e.status === 429) throw e;
-        const attempts = q.attempts + 1;
-        const msg = e instanceof Error ? e.message : String(e);
-        out.failed++;
-        out.errors.push(`${q.match_id}: ${msg}`);
-        await env.DB.prepare(`UPDATE match_queue SET attempts = ?, status = ?, error = ?, updated_at = ? WHERE match_id = ?`)
-          .bind(attempts, attempts >= MAX_ATTEMPTS ? "error" : "pending", msg.slice(0, 500), Date.now(), q.match_id)
-          .run();
-      }
-    }
+    await ingest(env, api, results, out);
   } catch (e) {
     if (e instanceof HenrikError && e.status === 429) out.rateLimited = true;
     else throw e;

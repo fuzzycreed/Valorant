@@ -16,6 +16,8 @@ export interface Env {
   /** 分析用の保管庫（R2、任意）。ARCHIVE_TOKEN は読み出し API の合言葉で、設定したときだけ API が有効になる。 */
   ARCHIVE?: R2Bucket;
   ARCHIVE_TOKEN?: string;
+  /** この Worker 自身への呼び出し口（任意）。急ぎの取り込みを、1回ごとに別の実行として何度も回すのに使う。 */
+  SELF?: Fetcher;
 }
 
 /** player_matches の列。順序は INSERT とスキーマの両方で使う。 */

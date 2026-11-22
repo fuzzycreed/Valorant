@@ -64,9 +64,13 @@ export async function queueRecentMatches(env: Env, api: Henrik, link: Pick<Link,
   const now = Date.now();
   const res = await env.DB.batch([
     env.DB.prepare(
-      `INSERT OR IGNORE INTO match_queue (match_id, region, started_at, queue, updated_at)
-       SELECT json_extract(value, '$.id'), ?1, json_extract(value, '$.t'), json_extract(value, '$.q'), ?2 FROM json_each(?3)`,
-    ).bind(link.region, now, JSON.stringify(found)),
+      `INSERT OR IGNORE INTO match_queue (match_id, region, started_at, queue, updated_at, puuid)
+       SELECT json_extract(value, '$.id'), ?1, json_extract(value, '$.t'), json_extract(value, '$.q'), ?2, ?4 FROM json_each(?3)`,
+    ).bind(link.region, now, JSON.stringify(found), link.puuid),
+    // ほかの人の履歴から先に積まれていた試合も、登録者のものとして優先して取り込む（本人アカウントの試合は生データを残すので触らない）
+    env.DB.prepare(
+      `UPDATE match_queue SET puuid = ?1 WHERE status = 'pending' AND keep_raw = 0 AND match_id IN (SELECT json_extract(value, '$.id') FROM json_each(?2))`,
+    ).bind(link.puuid, JSON.stringify(found)),
     env.DB.prepare(`UPDATE discord_links SET discovered_at = ? WHERE user_id = ?`).bind(now, link.user_id),
   ]);
   return res[0]?.meta?.changes ?? 0;

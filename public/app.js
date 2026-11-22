@@ -483,7 +483,7 @@ async function viewMatch(id) {
 // ---------- チーム分け ----------
 
 const ROLES = { duelist: "デュエリスト", initiator: "イニシエーター", controller: "コントローラー", sentinel: "センチネル" };
-const team = { players: [], maps: [], selected: new Set(), guests: [], pairs: [], result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
+const team = { players: [], maps: [], selected: new Set(), guests: [], pairs: [], boost: 0, result: null, variant: 0, flip: 0, map: null, msg: "", failed: [], adding: false };
 /** まとめて追加できる人数の上限と、新規登録どうしの間隔（外部 API のレート制限に収めるため）。 */
 const TEAM_ADD_MAX = 20;
 const TEAM_ADD_GAP_MS = 6000;
@@ -577,6 +577,7 @@ function renderTeams() {
           <textarea name="riot_ids" rows="2" maxlength="1500" placeholder="Riot ID で追加（例: name#tag）&#10;複数人は改行かカンマで区切ってまとめて追加できます" aria-label="Riot ID（複数可）"${team.adding ? " disabled" : ""}></textarea>
           <button class="btn"${team.adding ? " disabled" : ""}>追加</button>
         </form>
+        <div class="msg" id="team-boost">${boostText()}</div>
         <div class="msg" id="team-msg">${esc(team.msg)}${team.failed.length ? `<ul class="fails">${team.failed.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}</div>
         ${team.players.length ? `<div class="tablewrap"><table>
           <thead><tr><th></th><th class="l">プレイヤー</th><th class="l">ランク</th><th class="l">ロール</th><th>レート</th><th></th></tr></thead>
@@ -620,6 +621,33 @@ function renderTeams() {
     </section>`;
 }
 
+/** 登録した人の試合の取り込み状況（成績の補正とロールは、取り込みが済むと入る）。 */
+const boostText = () =>
+  team.boost > 0 ? `登録した人の試合を取り込み中です（残り ${team.boost} 試合・あと約 ${Math.max(1, Math.ceil(team.boost / 24))} 分）。終わると成績の補正とロールが入ります。` : "";
+let boostTimer = null;
+/** 取り込み待ちが残っている間、15秒おきに状況を見る。終わったら一覧を取り直してレートを更新する。 */
+async function watchBoost() {
+  clearTimeout(boostTimer);
+  if (location.hash !== "#/teams") return;
+  const before = team.boost ?? 0;
+  try {
+    team.boost = (await api("/status")).boost_pending ?? 0;
+  } catch {
+    team.boost = before;
+  }
+  const line = $("#team-boost");
+  if (line) line.textContent = boostText();
+  if (before > 0 && team.boost === 0 && !team.adding) {
+    try {
+      team.players = (await api("/team/players")).players;
+      // 入力途中の文字を消さないよう、何か書かれている間は描き直さない
+      const typing = [...document.querySelectorAll("#team-add textarea, #team-guest input[name=name]")].some((el) => el.value.trim());
+      if (location.hash === "#/teams" && !typing) { team.result = null; renderTeams(); }
+    } catch {}
+  }
+  if (team.boost > 0) boostTimer = setTimeout(watchBoost, 15000);
+}
+
 async function viewTeams() {
   $("#filters").hidden = true;
   const d = await api("/team/players");
@@ -628,6 +656,7 @@ async function viewTeams() {
   const ids = new Set(d.players.map((p) => p.id));
   for (const id of [...team.selected]) if (!ids.has(id)) team.selected.delete(id);
   renderTeams();
+  watchBoost();
 }
 
 const changed = () => { team.result = null; prunePairs(); saveTeam(); renderTeams(); };
@@ -678,6 +707,7 @@ async function addPlayers(ids) {
   team.result = null;
   saveTeam();
   if (onTeams()) renderTeams();
+  watchBoost();
 }
 
 $("#view").addEventListener("submit", async (e) => {
