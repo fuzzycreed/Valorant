@@ -623,29 +623,38 @@ function renderTeams() {
 
 /** 登録した人の試合の取り込み状況（成績の補正とロールは、取り込みが済むと入る）。 */
 const boostText = () =>
-  team.boost > 0 ? `登録した人の試合を取り込み中です（残り ${team.boost} 試合・あと約 ${Math.max(1, Math.ceil(team.boost / 15))} 分）。終わると成績の補正とロールが入ります。` : "";
-let boostTimer = null;
-/** 取り込み待ちが残っている間、15秒おきに状況を見る。終わったら一覧を取り直してレートを更新する。 */
-async function watchBoost() {
-  clearTimeout(boostTimer);
-  if (location.hash !== "#/teams") return;
-  const before = team.boost ?? 0;
+  team.boost > 0 ? `登録した人の試合を取り込み中です（残り ${team.boost} 試合・あと約 ${Math.max(1, Math.ceil(team.boost / 15))} 分）。終わったころに右上の「更新」を押すと、成績の補正とロールが入ります。` : "";
+/** 登録した人の試合の取り込み状況を1回だけ確かめる。自動では繰り返さない（続きを見るには「更新」を押す）。 */
+async function checkBoost() {
   try {
     team.boost = (await api("/status")).boost_pending ?? 0;
-  } catch {
-    team.boost = before;
-  }
+  } catch {}
   const line = $("#team-boost");
   if (line) line.textContent = boostText();
-  if (before > 0 && team.boost === 0 && !team.adding) {
-    try {
-      team.players = (await api("/team/players")).players;
-      // 入力途中の文字を消さないよう、何か書かれている間は描き直さない
-      const typing = [...document.querySelectorAll("#team-add textarea, #team-guest input[name=name]")].some((el) => el.value.trim());
-      if (location.hash === "#/teams" && !typing) { team.result = null; renderTeams(); }
-    } catch {}
+}
+
+/** チーム分けタブでの「更新」: 登録者のレートと取り込み状況を取り直す。選んだ人やペアの指定はそのまま。 */
+async function refreshTeams() {
+  const btn = $("#sync-btn");
+  btn.disabled = true;
+  try {
+    const d = await api("/team/players");
+    team.players = d.players;
+    team.maps = d.maps;
+    const ids = new Set(d.players.map((p) => p.id));
+    for (const id of [...team.selected]) if (!ids.has(id)) team.selected.delete(id);
+    team.boost = (await api("/status")).boost_pending ?? 0;
+    // 入力途中の文字を消さないよう、何か書かれている間は一覧を描き直さない
+    const typing = [...document.querySelectorAll("#team-add textarea, #team-guest input[name=name]")].some((el) => el.value.trim());
+    if (location.hash === "#/teams" && !typing) { team.result = null; renderTeams(); }
+    else if ($("#team-boost")) $("#team-boost").textContent = boostText();
+    refreshStatus();
+  } catch (e) {
+    team.msg = e.message;
+    if (location.hash === "#/teams") renderTeams();
+  } finally {
+    btn.disabled = false;
   }
-  if (team.boost > 0) boostTimer = setTimeout(watchBoost, 15000);
 }
 
 async function viewTeams() {
@@ -656,7 +665,7 @@ async function viewTeams() {
   const ids = new Set(d.players.map((p) => p.id));
   for (const id of [...team.selected]) if (!ids.has(id)) team.selected.delete(id);
   renderTeams();
-  watchBoost();
+  checkBoost();
 }
 
 const changed = () => { team.result = null; prunePairs(); saveTeam(); renderTeams(); };
@@ -707,7 +716,7 @@ async function addPlayers(ids) {
   team.result = null;
   saveTeam();
   if (onTeams()) renderTeams();
-  watchBoost();
+  checkBoost();
 }
 
 $("#view").addEventListener("submit", async (e) => {
@@ -812,7 +821,14 @@ function timeAgo(ts) {
   return min < 1 ? "たった今 更新" : min < 60 ? `${min}分前に更新` : min < 1440 ? `${Math.round(min / 60)}時間前に更新` : `${Math.round(min / 1440)}日前に更新`;
 }
 async function refreshStatus() {
-  const s = await api("/status");
+  const puuid = state.player?.puuid ?? "";
+  const s = await api("/status" + (puuid ? "?puuid=" + puuid : ""));
+  // 自動では取り込まない。開いている人の試合が待ちに残っていれば、知らせるだけにする
+  const banner = $("#banner");
+  if (!state.syncing && puuid && puuid === (state.player?.puuid ?? "") && onStatsView()) {
+    banner.hidden = !(s.focus_pending > 0);
+    if (s.focus_pending > 0) banner.textContent = `この人の試合が ${s.focus_pending} 件、取り込み待ちです。右上の「更新」を押すと取り込みます。`;
+  }
   // D1（無料プラン）の上限は 1データベース 500MB
   const usage = s.db_bytes ? ` ・ データ ${(s.db_bytes / 1e6).toFixed(0)} / 500 MB` : "";
   $("#sync-status").textContent = timeAgo(s.last_sync) + usage;
@@ -823,8 +839,9 @@ const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 const onStatsView = () => !/^#\/(teams|match\/|find\/)/.test(location.hash);
 
 /**
- * 同期を進める。プレイヤーのページでは、新着を確認したうえで、その人の取り込み待ちが
- * 無くなるまで少しずつ（1回の呼び出しで2試合）取り込む。トップページでは1回だけ進める。
+ * 同期を進める。「更新」を押したときと、Riot ID を検索した直後にだけ動く（ページを開いただけ・開いたままでは動かない）。
+ * プレイヤーのページでは、新着を確認したうえで、その人の取り込み待ちが無くなるまで少しずつ
+ * （1回の呼び出しで2試合）取り込む。トップページでは1回だけ進める。
  */
 async function drain() {
   if (state.syncing) return;
@@ -865,14 +882,14 @@ async function drain() {
     btn.disabled = false;
   }
   banner.hidden = true;
-  // 途中で別のページに切り替えられていたら、そちらの同期を続けて始める
-  if (switched()) return drain();
+  // 途中で別の人のページに切り替えられていたら、ここで止める（切り替え先は「更新」を押したときに同期する）
   refreshStatus();
+  if (switched()) return;
   if (!puuid) return; // トップページは再描画しない（検索欄に入力中の文字を消さないため）
   await reloadPlayer();
   if (onStatsView()) route();
 }
-$("#sync-btn").addEventListener("click", () => drain());
+$("#sync-btn").addEventListener("click", () => (location.hash === "#/teams" ? refreshTeams() : drain()));
 
 // ---------- プレイヤーの切り替えと検索 ----------
 
@@ -900,6 +917,8 @@ async function find(riotId) {
   try {
     const p = await api("/players/lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ riot_id: riotId }) });
     banner.hidden = true;
+    // 検索は「この人のデータが欲しい」という操作なので、開いた直後に1回だけ同期する
+    state.syncOnce = p.puuid;
     const target = playerHref(p.puuid);
     if (location.hash === target) route();
     else if (location.hash.startsWith("#/find/")) location.replace(target);
@@ -944,7 +963,11 @@ async function route() {
     const before = state.player?.puuid;
     if (pm && before !== pm[1]) setPlayer(await api("/player/" + pm[1]));
     else if (page === "top") setPlayer(null);
-    if (state.player?.puuid !== before) drain();
+    // ページを開いただけでは同期しない。検索した直後の人だけ1回同期し、それ以外は状況を表示するだけ
+    if (state.player && state.syncOnce === state.player.puuid) {
+      state.syncOnce = null;
+      drain();
+    } else if (state.player?.puuid !== before) refreshStatus().catch(() => {});
   } catch (e) {
     $("#filters").hidden = true;
     $("#view").innerHTML = `<div class="card empty">${esc(e.message)}　<a class="plink" href="#/">トップへ</a></div>`;
@@ -969,6 +992,6 @@ addEventListener("hashchange", () => { route(); scrollTo(0, 0); });
 (async () => {
   renderPlayer();
   await route();
-  refreshStatus();
-  drain();
+  // プレイヤーのページでは route の中で取得済み
+  if (!state.player) refreshStatus().catch(() => {});
 })();
