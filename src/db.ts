@@ -165,8 +165,16 @@ const DDL_V13 = [
   `ALTER TABLE lobbies ADD COLUMN seed INTEGER`,
 ];
 
+const DDL_V14 = [
+  // D1 は読んだ行数に1日の上限がある。よく走る問い合わせが表を全部読まないようにする
+  // 「いちばん新しい試合」「最近の試合」「古い試合」を、試合の全件を読まずに引く
+  `CREATE INDEX IF NOT EXISTS matches_started ON matches (started_at)`,
+  // 圧縮待ちの生データ（ふだんは0件）を、生データの全件を読まずに引く
+  `CREATE INDEX IF NOT EXISTS match_raw_plain ON match_raw (match_id) WHERE gz IS NULL`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12, DDL_V13];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12, DDL_V13, DDL_V14];
 
 let ready: Promise<void> | null = null;
 

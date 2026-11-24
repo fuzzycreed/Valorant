@@ -833,6 +833,8 @@ async function drain() {
   btn.disabled = true;
   const puuid = state.player?.puuid ?? "";
   const switched = () => (state.player?.puuid ?? "") !== puuid;
+  // この人の取り込み待ちが減ったときだけ画面を描き直す
+  let seen = Infinity;
   try {
     for (let i = 0; i < 150; i++) {
       const r = await api("/sync?puuid=" + puuid, { method: "POST" });
@@ -844,9 +846,11 @@ async function drain() {
         await wait(60000);
         continue;
       }
-      // RIOT_IDS に書かれた本人は全履歴を取り込むので全体の残りを、検索した人はその人の分だけを見る
-      const left = state.player.source === "config" ? r.pending : r.focusPending;
-      if (r.processed > 0 && onStatsView()) await route();
+      // 見るのは「いま開いている人の試合」の残りだけ。全体の残り（収集対象のぶんなど）は定期実行に任せる。
+      // 全体の残りを待つと、それが常に残っている間ずっと5秒おきに同期と再描画を繰り返し、D1 の読み取りを使い切る
+      const left = r.focusPending;
+      if (left < seen && onStatsView()) await route();
+      seen = left;
       if (left === 0) break;
       banner.hidden = false;
       banner.textContent = `試合データを取り込み中です… 残り ${left} 試合`;

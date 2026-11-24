@@ -192,7 +192,8 @@ async function discover(env: Env, api: Henrik, p: PlayerRow): Promise<number> {
        FROM json_each(?3)`,
     ).bind(p.region, now, JSON.stringify(found), p.puuid, owner ? 1 : 0),
     env.DB.prepare(
-      `INSERT OR REPLACE INTO mmr_history (puuid, match_id, date, tier, tier_name, rr, rr_change, elo, map, season)
+      // すでにある試合の RR は変わらないので、新しい行だけ書く（毎回上書きすると D1 の書き込みの半分を占める）
+      `INSERT OR IGNORE INTO mmr_history (puuid, match_id, date, tier, tier_name, rr, rr_change, elo, map, season)
        SELECT ?1, json_extract(value, '$.match_id'), json_extract(value, '$.date'), json_extract(value, '$.tier'),
               json_extract(value, '$.tier_name'), json_extract(value, '$.rr'), json_extract(value, '$.rr_change'),
               json_extract(value, '$.elo'), json_extract(value, '$.map'), json_extract(value, '$.season')

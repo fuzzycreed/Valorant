@@ -78,6 +78,23 @@ export async function queueRecentMatches(env: Env, api: Henrik, link: Pick<Link,
 
 /** 追跡中のプレイヤーが最近コンペで遊んだマップ（現行のマッププールの近似）。 */
 export async function recentMaps(env: Env): Promise<string[]> {
+  // 45日ぶんの試合を毎回読むと重いので、結果を6時間控えておく
+  const now = Date.now();
+  const cached = await env.DB.prepare(`SELECT value FROM meta WHERE key = 'recent_maps'`).first<{ value: string }>();
+  if (cached) {
+    try {
+      const c = JSON.parse(cached.value) as { at: number; maps: string[] };
+      if (now - c.at < MAPS_CACHE_MS && Array.isArray(c.maps)) return c.maps;
+    } catch {}
+  }
+  const maps = await queryRecentMaps(env);
+  await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('recent_maps', ?)`).bind(JSON.stringify({ at: now, maps })).run();
+  return maps;
+}
+
+const MAPS_CACHE_MS = 6 * 60 * 60 * 1000;
+
+async function queryRecentMaps(env: Env): Promise<string[]> {
   const { results } = await env.DB.prepare(
     `SELECT DISTINCT map FROM matches WHERE queue = 'competitive' AND started_at > ? AND map != '' ORDER BY map`,
   )
