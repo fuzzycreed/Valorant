@@ -173,8 +173,16 @@ const DDL_V14 = [
   `CREATE INDEX IF NOT EXISTS match_raw_plain ON match_raw (match_id) WHERE gz IS NULL`,
 ];
 
+const DDL_V15 = [
+  // D1 の読み書き行数の記録（処理の種類ごと・日ごと。sql が空の行はその処理の合計、空でない行は重かった文の内訳）
+  `CREATE TABLE IF NOT EXISTS usage_log (
+     day TEXT NOT NULL, source TEXT NOT NULL, sql TEXT NOT NULL DEFAULT '',
+     calls INTEGER NOT NULL DEFAULT 0, reads INTEGER NOT NULL DEFAULT 0, writes INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (day, source, sql))`,
+];
+
 /** 番号順に適用するスキーマ変更。追加するときは末尾に足す（既存の要素は書き換えない）。 */
-const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12, DDL_V13, DDL_V14];
+const MIGRATIONS = [DDL_V1, DDL_V2, DDL_V3, DDL_V4, DDL_V5, DDL_V6, DDL_V7, DDL_V8, DDL_V9, DDL_V10, DDL_V11, DDL_V12, DDL_V13, DDL_V14, DDL_V15];
 
 let ready: Promise<void> | null = null;
 

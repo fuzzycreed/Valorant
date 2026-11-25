@@ -130,6 +130,12 @@ export async function handleArchive(req: Request, env: Env, url: URL): Promise<R
       return json({ count: results.length, limit: TRACK_LIMIT, players: results });
     }
   }
+  if (req.method === "GET" && action === "usage") {
+    // D1 の読み書き行数の記録（処理ごと・重かった文ごと）。day を省くと今日（UTC）
+    const day = q.get("day") ?? new Date().toISOString().slice(0, 10);
+    const { results } = await env.DB.prepare(`SELECT source, sql, calls, reads, writes FROM usage_log WHERE day = ? ORDER BY reads DESC LIMIT 200`).bind(day).all();
+    return json({ day, rows: results });
+  }
   if (req.method === "GET" && action === "errors") {
     // 取り込みに失敗して止まっている試合（原因の確認用）
     const { results } = await env.DB.prepare(

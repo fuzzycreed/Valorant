@@ -4,6 +4,21 @@ import type { Env } from "./db";
 import { discordStatus, handleDiscord, registerCommands } from "./discord";
 import { boostPending, boostStep, sinceLastLink, syncStep, type SyncResult } from "./sync";
 import { handleTeams } from "./teams";
+import { metered, recordUsage, sourceOf } from "./usage";
+
+async function route(req: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
+  if (url.pathname === "/api/discord" && req.method === "POST") return await handleDiscord(req, env, ctx);
+  if (url.pathname === "/api/discord" && req.method === "GET") return await discordStatus(env, url.origin);
+  if (url.pathname.startsWith("/api/archive/")) return await handleArchive(req, env, url);
+  if (url.pathname.startsWith("/api/team/")) return await handleTeams(req, env, url.pathname.slice(4));
+  if (url.pathname === "/api/sync/boost" && req.method === "POST") return json(await boostStep(env));
+  if (url.pathname === "/api/sync" && req.method === "POST") {
+    // 画面の「更新」ボタン用。新着検出は内部で5分に1回までに抑えられている。
+    const focus = url.searchParams.get("puuid") ?? undefined;
+    return json(await syncStep(env, { maxMatches: 2, focus }));
+  }
+  return await handleApi(req, env, url);
+}
 
 /** 急ぎの取り込みを1回の定期実行で続ける時間（ミリ秒）。次の定期実行（1分後）と重ならないようにする。 */
 const BOOST_BUDGET_MS = 50_000;
@@ -19,10 +34,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * 取り込みは1回ごとに自分自身を呼び直し、別の実行として処理する（1回の実行で使える CPU 時間が短いため）。
  * 残っていなければ、5分に1回だけ通常の同期を回す。
  */
-async function tick(env: Env, scheduledTime: number): Promise<void> {
+async function tick(env: Env, scheduledTime: number): Promise<string> {
   let pending = await boostPending(env);
   if (pending > 0) {
-    if ((await sinceLastLink(env)) < BOOST_YIELD_MS) return console.log("boost", JSON.stringify({ pending, yielded: true }));
+    if ((await sinceLastLink(env)) < BOOST_YIELD_MS) {
+      console.log("boost", JSON.stringify({ pending, yielded: true }));
+      return "boost-wait";
+    }
     const deadline = Date.now() + BOOST_BUDGET_MS;
     let processed = 0, limited = false;
     // 自分自身を呼べない環境（ローカルなど）では、この実行の中で1回だけ進める
@@ -42,35 +60,33 @@ async function tick(env: Env, scheduledTime: number): Promise<void> {
     }
     console.log("boost", JSON.stringify({ processed, pending, limited }));
     // 進んだか、API の制限で止まっただけなら、この回は急ぎの取り込みだけにする
-    if (processed > 0 || limited) return;
+    if (processed > 0 || limited) return "boost";
   }
-  if (new Date(scheduledTime).getUTCMinutes() % SYNC_EVERY_MIN !== 0) return;
+  if (new Date(scheduledTime).getUTCMinutes() % SYNC_EVERY_MIN !== 0) return "idle";
   console.log("sync", JSON.stringify(await syncStep(env, { maxMatches: 2 })));
+  return "sync";
 }
 
 export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, rawEnv: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
-    if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(req);
+    if (!url.pathname.startsWith("/api/")) return rawEnv.ASSETS.fetch(req);
+    // D1 を数える版に差し替え、この呼び出しが読み書きした行数を最後に記録する
+    const m = metered(rawEnv.DB);
+    const env: Env = { ...rawEnv, DB: m.db };
     try {
-      if (url.pathname === "/api/discord" && req.method === "POST") return await handleDiscord(req, env, ctx);
-      if (url.pathname === "/api/discord" && req.method === "GET") return await discordStatus(env, url.origin);
-      if (url.pathname.startsWith("/api/archive/")) return await handleArchive(req, env, url);
-      if (url.pathname.startsWith("/api/team/")) return await handleTeams(req, env, url.pathname.slice(4));
-      if (url.pathname === "/api/sync/boost" && req.method === "POST") return json(await boostStep(env));
-      if (url.pathname === "/api/sync" && req.method === "POST") {
-        // 画面の「更新」ボタン用。新着検出は内部で5分に1回までに抑えられている。
-        const focus = url.searchParams.get("puuid") ?? undefined;
-        return json(await syncStep(env, { maxMatches: 2, focus }));
-      }
-      return await handleApi(req, env, url);
+      return await route(req, env, ctx, url);
     } catch (e) {
       console.error(e);
       return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    } finally {
+      ctx.waitUntil(recordUsage(rawEnv.DB, sourceOf(req.method, url.pathname), m.meter));
     }
   },
 
-  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, rawEnv: Env, ctx: ExecutionContext): Promise<void> {
+    const m = metered(rawEnv.DB);
+    const env: Env = { ...rawEnv, DB: m.db };
     ctx.waitUntil(
       registerCommands(env).then(
         (done) => done && console.log("discord commands registered"),
@@ -79,6 +95,7 @@ export default {
     );
     // waitUntil に渡すと、ハンドラーが返ってから約30秒で打ち切られる。急ぎの取り込みは1回の定期実行で
     // 30秒以上かかることがあるので、ここで終わるまで待つ（定期実行そのものは最長15分動ける）
-    await tick(env, event.scheduledTime).catch((e) => console.error("sync failed", e));
+    const kind = await tick(env, event.scheduledTime).catch((e) => (console.error("sync failed", e), "error"));
+    await recordUsage(rawEnv.DB, `cron:${kind}`, m.meter);
   },
 } satisfies ExportedHandler<Env>;
